@@ -1,0 +1,58 @@
+# Reference Cloud Run service spec. Apply with:
+#   gcloud run services replace infra/service.yaml --region=us-central1
+#
+# Edit PROJECT_ID and image tag before use.
+
+apiVersion: serving.knative.dev/v1
+kind: Service
+metadata:
+  name: gemmaplay-api
+  annotations:
+    run.googleapis.com/launch-stage: GA
+spec:
+  template:
+    metadata:
+      annotations:
+        run.googleapis.com/cpu-throttling: "true"
+        autoscaling.knative.dev/minScale: "0"
+        autoscaling.knative.dev/maxScale: "3"
+    spec:
+      containerConcurrency: 40
+      timeoutSeconds: 120
+      containers:
+        - image: us-central1-docker.pkg.dev/PROJECT_ID/gemmaplay/gemmaplay-api:latest
+          ports:
+            - name: http1
+              containerPort: 8080
+          resources:
+            limits:
+              cpu: "1"
+              memory: "1Gi"
+          env:
+            - name: APP_ENV
+              value: production
+            - name: GEMMA_PROVIDER
+              value: google
+            - name: STORAGE_BACKEND
+              value: gcs
+            - name: GCS_BUCKET
+              value: PROJECT_ID-gemmaplay
+            - name: CORS_ORIGINS
+              value: https://your-frontend-domain.web.app
+            - name: GEMMA_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: gemma-api-key
+                  key: latest
+          startupProbe:
+            httpGet:
+              path: /healthz
+            periodSeconds: 5
+            failureThreshold: 10
+          livenessProbe:
+            httpGet:
+              path: /healthz
+            periodSeconds: 30
+  traffic:
+    - percent: 100
+      latestRevision: true

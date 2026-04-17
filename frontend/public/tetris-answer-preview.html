@@ -1,0 +1,171 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Tetris Answer Preview — GemmaPlay</title>
+    <style>
+      html, body {
+        margin: 0;
+        padding: 0;
+        background: #0c1220;
+        color: #e2e8f0;
+        font-family: Inter, system-ui, -apple-system, sans-serif;
+        min-height: 100%;
+      }
+      main {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        padding: 24px 16px 48px;
+      }
+      h1 {
+        font-size: 20px;
+        font-weight: 600;
+        margin: 0 0 12px;
+      }
+      p.controls {
+        font-size: 13px;
+        color: #94a3b8;
+        margin: 0 0 16px;
+        max-width: 960px;
+        text-align: center;
+        line-height: 1.5;
+      }
+      kbd {
+        background: #1e293b;
+        border: 1px solid #334155;
+        border-radius: 4px;
+        padding: 1px 6px;
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        font-size: 12px;
+        color: #e2e8f0;
+      }
+      #game {
+        width: 960px;
+        max-width: 100%;
+        border: 1px solid #1e293b;
+        border-radius: 8px;
+        overflow: hidden;
+        background: #0c1220;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Tetris Answer — standalone preview</h1>
+      <p class="controls">
+        <kbd>←</kbd>/<kbd>A</kbd> move left &nbsp;·&nbsp;
+        <kbd>→</kbd>/<kbd>D</kbd> move right &nbsp;·&nbsp;
+        <kbd>↓</kbd>/<kbd>S</kbd> soft drop (hold)
+      </p>
+      <div id="game"></div>
+    </main>
+
+    <script src="https://cdn.jsdelivr.net/npm/phaser@3.80.1/dist/phaser.min.js"></script>
+    <script type="module">
+      import { TetrisAnswerScene } from '/src/scenes/TetrisAnswerScene.js'
+
+      // Hardcoded photosynthesis lesson — 2 concepts × 3 questions each.
+      const lesson = {
+        concepts: [
+          {
+            id: 'c1',
+            name: 'Inputs of Photosynthesis',
+            questions: [
+              {
+                id: 'q1',
+                q: 'Which gas do plants absorb from the air to perform photosynthesis?',
+                options: ['Oxygen', 'Carbon dioxide', 'Nitrogen', 'Hydrogen'],
+                answer_index: 1,
+              },
+              {
+                id: 'q2',
+                q: 'Where inside the plant cell does photosynthesis take place?',
+                options: ['Nucleus', 'Mitochondria', 'Chloroplasts', 'Ribosomes'],
+                answer_index: 2,
+              },
+              {
+                id: 'q3',
+                q: 'What energy source powers photosynthesis?',
+                options: ['Moonlight', 'Sunlight', 'Heat from the soil', 'Wind'],
+                answer_index: 1,
+              },
+            ],
+          },
+          {
+            id: 'c2',
+            name: 'Outputs of Photosynthesis',
+            questions: [
+              {
+                id: 'q4',
+                q: 'Which gas is released by plants as a by-product of photosynthesis?',
+                options: ['Carbon dioxide', 'Methane', 'Oxygen', 'Nitrogen'],
+                answer_index: 2,
+              },
+              {
+                id: 'q5',
+                q: 'What sugar is produced by photosynthesis and used for energy?',
+                options: ['Glucose', 'Fructose', 'Lactose', 'Sucrose'],
+                answer_index: 0,
+              },
+              {
+                id: 'q6',
+                q: 'Plants store excess sugar from photosynthesis mainly as what?',
+                options: ['Protein', 'Starch', 'Fat', 'Cellulose only'],
+                answer_index: 1,
+              },
+            ],
+          },
+        ],
+      }
+
+      const game = {
+        game_id: 'harness_game',
+        lesson_id: 'harness_lesson',
+        game_type: 'tetris_answer',
+        levels: [
+          {
+            concept_id: 'c1',
+            base_speed: 40,
+            questions: ['q1', 'q2', 'q3'],
+          },
+          {
+            concept_id: 'c2',
+            base_speed: 55,
+            questions: ['q4', 'q5', 'q6'],
+          },
+        ],
+      }
+
+      function onSessionEnd(stats) {
+        const msg =
+          `Session ended!\n\n` +
+          `Score: ${stats.score}\n` +
+          `Hearts left: ${stats.hearts}\n` +
+          `Time: ${stats.time_seconds}s\n` +
+          `Hints used: ${stats.hintsUsed}`
+        window.alert(msg)
+      }
+      window.onSessionEnd = onSessionEnd
+
+      const phaserConfig = {
+        type: Phaser.AUTO,
+        parent: 'game',
+        width: 960,
+        height: 540,
+        backgroundColor: '#0c1220',
+        scene: [TetrisAnswerScene],
+        pixelArt: false,
+      }
+
+      const phaserGame = new Phaser.Game(phaserConfig)
+      phaserGame.scene.start('TetrisAnswerScene', {
+        game,
+        lesson,
+        sessionId: 'harness',
+        onSessionEnd,
+      })
+    </script>
+  </body>
+</html>

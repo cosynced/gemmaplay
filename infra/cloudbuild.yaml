@@ -44,6 +44,7 @@ steps:
       - '--timeout=120'
       - '--max-instances=3'
       - '--set-env-vars=APP_ENV=production,GEMMA_PROVIDER=vertex,GCP_PROJECT_ID=$PROJECT_ID,GCP_REGION=${_REGION},VERTEX_MODEL_ID=${_VERTEX_MODEL_ID},STORAGE_BACKEND=gcs,GCS_BUCKET=$PROJECT_ID-gemmaplay'
+      - '--set-secrets=SESSION_JWT_SECRET=gemmaplay-session-jwt:latest'
 
 substitutions:
   _REGION: us-central1

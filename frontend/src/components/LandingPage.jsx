@@ -284,9 +284,14 @@ export function LandingPage({
             initial={{ opacity: 0, y: 20 }}
             animate={{ opacity: 1, y: 0 }}
             transition={{ duration: 0.6, ease: 'easeOut' }}
-            className="text-4xl sm:text-6xl md:text-7xl lg:text-[80px] font-extrabold tracking-tight leading-none"
+            // px-2 + leading-[1.1] give the gradient box horizontal and
+            // vertical cushion so bold font overshoot (G's left serif,
+            // y's right terminal) isn't clipped by bg-clip-text. overflow
+            // explicitly visible in case a parent's overflow-hidden
+            // collides at narrow widths.
+            className="text-4xl sm:text-6xl md:text-7xl lg:text-[80px] font-extrabold tracking-tight leading-[1.1] px-2 overflow-visible"
           >
-            <span className="bg-clip-text text-transparent bg-gradient-to-r from-sky-400 via-sky-300 to-violet-400">
+            <span className="inline-block px-1 bg-clip-text text-transparent bg-gradient-to-r from-sky-400 via-sky-300 to-violet-400">
               GemmaPlay
             </span>
           </motion.h1>

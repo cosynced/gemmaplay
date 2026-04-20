@@ -66,9 +66,27 @@ def get_user_activity(db: Session, username: str) -> list[dict]:
         ))
 
     # ---- Played ----
-    sessions = db.exec(
+    # Two overlapping buckets:
+    #   1. sessions this user played themselves (student_name == username)
+    #   2. sessions anyone played on a lesson this user owns
+    #      (teacher_username == username and student_name != username)
+    # Union-dedup on session_id so a creator self-play isn't double-counted.
+    own_plays = db.exec(
         select(SessionRow).where(SessionRow.student_name == username)
     ).all()
+    student_plays = db.exec(
+        select(SessionRow).where(
+            SessionRow.teacher_username == username,
+            SessionRow.student_name != username,
+        )
+    ).all()
+    seen_ids: set[str] = set()
+    sessions: list[SessionRow] = []
+    for s in list(own_plays) + list(student_plays):
+        if s.session_id in seen_ids:
+            continue
+        seen_ids.add(s.session_id)
+        sessions.append(s)
 
     # Cache game + lesson lookups so we don't N+1.
     game_cache: dict[str, GameRow] = {}
@@ -107,10 +125,11 @@ def get_user_activity(db: Session, username: str) -> list[dict]:
             except (TypeError, ValueError):
                 score = None
 
+        played_by_self = s.student_name == username
         entries.append((
             s.started_at,
             {
-                "type": "played",
+                "type": "played" if played_by_self else "student_played",
                 "lesson_id": lesson.lesson_id,
                 "lesson_title": lesson.title,
                 "lesson_subject": lesson.subject or None,
@@ -119,6 +138,7 @@ def get_user_activity(db: Session, username: str) -> list[dict]:
                 "total_questions": total_q or None,
                 "game_type": (game.data or {}).get("game_type") or None,
                 "completed": bool(report),
+                "student_name": None if played_by_self else s.student_name,
             },
         ))
 

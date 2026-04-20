@@ -10,13 +10,13 @@ body {
   font-family: 'Inter', system-ui, sans-serif;
 }
 
+/* The Phaser host fills its parent completely. The wrapper in GameView
+   owns aspect-ratio + max-width, so this rule just supplies background
+   + clipping so the canvas never bleeds outside a rounded corner. */
 .phaser-container {
   width: 100%;
-  max-width: 960px;
-  aspect-ratio: 16 / 9;
-  margin: 0 auto;
+  height: 100%;
   background: #0c1220;
-  border-radius: 12px;
   overflow: hidden;
 }
 

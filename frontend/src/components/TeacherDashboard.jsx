@@ -221,6 +221,13 @@ function TypeBadge({ type }) {
       </span>
     )
   }
+  if (type === 'student_played') {
+    return (
+      <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-[10px] uppercase tracking-widest font-semibold bg-sky-500/15 text-sky-300 border border-sky-500/40">
+        Student play
+      </span>
+    )
+  }
   return (
     <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-[10px] uppercase tracking-widest font-semibold bg-amber-500/15 text-amber-300 border border-amber-500/40">
       Played
@@ -230,11 +237,12 @@ function TypeBadge({ type }) {
 
 function ActivityRow({ item, expanded, onToggle, delay = 0 }) {
   const meta = [
+    item.type === 'student_played' && item.student_name ? `@${item.student_name}` : null,
     item.lesson_subject,
     formatTimestamp(item.timestamp),
   ].filter(Boolean).join(' · ')
-  const showScoreLine =
-    item.type === 'played' && item.completed && item.score != null
+  const isPlay = item.type === 'played' || item.type === 'student_played'
+  const showScoreLine = isPlay && item.completed && item.score != null
   return (
     <motion.div
       initial={{ opacity: 0, y: 16 }}
@@ -281,7 +289,7 @@ function ActivityRow({ item, expanded, onToggle, delay = 0 }) {
           >
             {item.type === 'created'
               ? <LessonDetail lessonId={item.lesson_id} />
-              : <PlayedDetail item={item} />}
+              : <PlayedDetail item={item} isStudentPlay={item.type === 'student_played'} />}
           </motion.div>
         )}
       </AnimatePresence>
@@ -289,7 +297,7 @@ function ActivityRow({ item, expanded, onToggle, delay = 0 }) {
   )
 }
 
-function PlayedDetail({ item }) {
+function PlayedDetail({ item, isStudentPlay = false }) {
   function playAgain() {
     if (typeof window !== 'undefined' && item.lesson_id) {
       window.location.assign(`/play/${item.lesson_id}`)
@@ -299,6 +307,9 @@ function PlayedDetail({ item }) {
   return (
     <div className="border-t border-slate-800 p-4 sm:p-6 space-y-4">
       <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
+        {isStudentPlay && (
+          <Stat label="Student" value={item.student_name ? `@${item.student_name}` : '—'} />
+        )}
         <Stat
           label="Score"
           value={
@@ -313,14 +324,16 @@ function PlayedDetail({ item }) {
           value={item.completed ? 'Completed' : 'Not finished'}
         />
       </div>
-      <motion.button
-        whileHover={{ scale: 1.02 }}
-        whileTap={{ scale: 0.98 }}
-        onClick={playAgain}
-        className="w-full px-6 py-3 rounded-xl bg-brand-500 hover:bg-brand-600 text-white font-semibold text-sm shadow-lg shadow-brand-500/30"
-      >
-        Play again
-      </motion.button>
+      {!isStudentPlay && (
+        <motion.button
+          whileHover={{ scale: 1.02 }}
+          whileTap={{ scale: 0.98 }}
+          onClick={playAgain}
+          className="w-full px-6 py-3 rounded-xl bg-brand-500 hover:bg-brand-600 text-white font-semibold text-sm shadow-lg shadow-brand-500/30"
+        >
+          Play again
+        </motion.button>
+      )}
     </div>
   )
 }

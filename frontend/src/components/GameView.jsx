@@ -104,22 +104,36 @@ export function GameView({ gameId, onFinished, studentName }) {
     )
   }
 
+  const isLaneRunner = game.game_type === 'lane_runner'
+
   return (
-    <section className="w-full px-2 sm:px-6 md:px-10 py-6 sm:py-10">
+    // Flex column that fills the viewport. The header is shrink-to-content
+    // so the canvas wrapper gets all remaining vertical space via flex-1,
+    // and the canvas's internal Phaser.Scale.FIT stays aspect-locked within.
+    // 100dvh handles mobile URL-bar show/hide (falls back to 100vh in CSS).
+    <section
+      className="w-full px-1 sm:px-6 md:px-10 py-1 sm:py-6 flex flex-col"
+      style={{
+        minHeight: '100dvh',
+        // Fallback for older browsers that don't support dvh: still give
+        // the section a full-viewport height so flex-1 children can expand.
+        ['--mvh']: '100vh',
+      }}
+    >
       <motion.div
         initial={{ opacity: 0, y: 20 }}
         animate={{ opacity: 1, y: 0 }}
         transition={{ duration: 0.5, ease: 'easeOut' }}
-        className="max-w-6xl mx-auto"
+        className="w-full max-w-6xl mx-auto flex-1 min-h-0 flex flex-col"
       >
-        <div className="text-center mb-4 sm:mb-6">
-          <div className="text-xs uppercase tracking-widest text-brand-500 font-semibold">
+        <div className="text-center mb-1 sm:mb-4 shrink-0">
+          <div className="hidden sm:block text-xs uppercase tracking-widest text-brand-500 font-semibold">
             Now playing
           </div>
-          <h2 className="mt-1 text-xl sm:text-2xl md:text-3xl font-bold text-slate-100 break-words px-2">
+          <h2 className="text-sm sm:text-2xl md:text-3xl font-semibold sm:font-bold text-slate-100 break-words px-2 line-clamp-1 sm:line-clamp-none leading-tight">
             {lesson.title}
           </h2>
-          <p className="mt-2 text-[11px] sm:text-xs uppercase tracking-wider text-slate-500">
+          <p className="hidden sm:block mt-2 text-[11px] sm:text-xs uppercase tracking-wider text-slate-500">
             Arrow keys · WASD · A / B / C / D · or swipe
           </p>
         </div>
@@ -129,20 +143,39 @@ export function GameView({ gameId, onFinished, studentName }) {
           animate={{ opacity: 1, scale: 1 }}
           transition={{ duration: 0.5, delay: 0.1, ease: 'easeOut' }}
           className={
-            game.game_type === 'lane_runner'
-              // Portrait 540:900 frame. Mobile: width fills viewport,
-              // height derived from aspect. Desktop: height dominates
-              // (min of 85vh / 900px), width derived from aspect.
-              ? 'mx-auto rounded-xl sm:rounded-2xl overflow-hidden border border-slate-800 bg-slate-900/60 p-1 sm:p-3 shadow-2xl shadow-brand-500/10 w-full max-w-[540px] aspect-[540/900] md:w-auto md:h-[min(85vh,900px)]'
-              : 'rounded-xl sm:rounded-2xl overflow-hidden border border-slate-800 bg-slate-900/60 p-1 sm:p-3 shadow-2xl shadow-brand-500/10'
+            isLaneRunner
+              // Portrait 540:900. Mobile + desktop both center and
+              // aspect-lock; flex-1 lets the canvas use all remaining
+              // vertical space, capped at 900px on big screens.
+              ? 'mx-auto rounded-xl sm:rounded-2xl overflow-hidden border border-slate-800 bg-slate-900/60 p-0 sm:p-3 shadow-2xl shadow-brand-500/10 flex-1 min-h-0 w-full max-w-[540px] aspect-[540/900] max-h-[min(100%,900px)]'
+              // Landscape 16:9. Mobile: canvas takes full viewport
+              // width with 16:9 letterbox; flex-1 pushes the wrapper
+              // to fill remaining vertical space, but aspect-ratio
+              // caps the actual canvas box so Phaser FIT scales
+              // correctly. Desktop: capped at 1200px wide, centered.
+              : 'mx-auto rounded-xl sm:rounded-2xl overflow-hidden border border-slate-800 bg-slate-900/60 p-0 sm:p-3 shadow-2xl shadow-brand-500/10 flex-1 min-h-0 w-full max-w-[1200px] flex items-center justify-center'
           }
         >
-          <PhaserGame
-            game={game}
-            lesson={lesson}
-            sessionId={sessionId}
-            onSessionEnd={handleEnd}
-          />
+          {isLaneRunner ? (
+            <PhaserGame
+              game={game}
+              lesson={lesson}
+              sessionId={sessionId}
+              onSessionEnd={handleEnd}
+            />
+          ) : (
+            // Aspect-locked inner box so Phaser FIT has a 16:9 bounding
+            // rect to measure; without this the flex parent can be any
+            // shape and FIT would pick an ugly scale.
+            <div className="w-full aspect-[16/9] max-h-full">
+              <PhaserGame
+                game={game}
+                lesson={lesson}
+                sessionId={sessionId}
+                onSessionEnd={handleEnd}
+              />
+            </div>
+          )}
         </motion.div>
       </motion.div>
 

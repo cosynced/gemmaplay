@@ -9,6 +9,7 @@ from sqlmodel import Session, select
 from tenacity import RetryError
 
 from app.agents.adaptation_agent import AdaptationAgent
+from app.api.dependencies import get_current_username
 from app.core.logging import get_logger
 from app.core.rate_limit import limiter
 from app.db.models import GameRow, ReportRow, SessionRow
@@ -77,6 +78,14 @@ async def start_session(
     db: Session = Depends(get_session),
 ):
     student_name = _clean_name(payload.student_name)
+    # If the client didn't pass a usable student_name but is signed in,
+    # default the session to the authenticated username. This is how the
+    # creator's own playthroughs get tagged as themselves (and in turn
+    # triggers second-person narrative in the report).
+    if student_name == "anon":
+        session_user = get_current_username(request)
+        if session_user:
+            student_name = _clean_name(session_user)
     # Prefer the game's owner as the teacher tag so analytics stay correct
     # even if the client omits or lies about teacher_username.
     game_row = db.exec(

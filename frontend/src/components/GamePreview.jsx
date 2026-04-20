@@ -43,13 +43,15 @@ const PREVIEWS = {
     tagline: 'Shoot the letter that matches the answer.',
     Visual: ShooterVisual,
     rules: [
-      'Letters (A/B/C/D) descend toward your ship.',
-      'Shoot the letter that matches the correct answer.',
-      'Let wrong letters pass. Getting hit by any letter costs a heart.',
+      'Enemies descend with answer letters. Shoot the one matching the correct answer.',
+      'Wrong shots don\u2019t destroy enemies — they keep coming.',
+      'An enemy touching your ship drains 1 health.',
+      'Every 2 correct shots: health regenerates by 1.',
+      'Health at 0 = game over.',
     ],
     controls: [
-      'Keyboard: Left / Right arrows, Spacebar to shoot',
-      'Touch: Tap screen to move + shoot',
+      'Keyboard: Left / Right arrows or A / D. Space or Up to fire.',
+      'Touch: Drag ship to steer, tap anywhere to fire.',
     ],
   },
   snake_knowledge: {
@@ -349,20 +351,101 @@ function TetrisVisual({ className }) {
   )
 }
 
-function ShooterVisual({ accent, className }) {
+function ShooterVisual({ className }) {
+  // Retro pixel aesthetic: starfield, pixel-art ship at bottom, four
+  // labeled invader enemies descending. Drawn as chunky 3px "pixels" so
+  // it mirrors the in-game sprite style.
+  const P = 3
+  const SHIP_ROWS = [
+    '......A......',
+    '.....AMA.....',
+    '....MMMMM....',
+    '..MMMMMMMMM..',
+    '.MMMMMMMMMMM.',
+    'MMMMMMMMMMMMM',
+    'MMM.MMMMM.MMM',
+    'MM.........MM',
+  ]
+  const ENEMY_ROWS = [
+    'X........X',
+    '.X......X.',
+    '.XXXXXXXX.',
+    'XX.XXXX.XX',
+    'XXXXXXXXXX',
+    'X.XXXXXX.X',
+    'X.X....X.X',
+    '..XX..XX..',
+  ]
+  const letters = [
+    { letter: 'A', color: '#0ea5e9', col: 0 },
+    { letter: 'B', color: '#a855f7', col: 1 },
+    { letter: 'C', color: '#f59e0b', col: 2 },
+    { letter: 'D', color: '#10b981', col: 3 },
+  ]
+  const shipW = SHIP_ROWS[0].length * P
+  const shipH = SHIP_ROWS.length * P
+  const enemyW = ENEMY_ROWS[0].length * P
+  const enemyH = ENEMY_ROWS.length * P
+  const shipOriginX = 160 - shipW / 2
+  const shipOriginY = 110 - shipH
+  const enemyY = 16
+  const enemyXFor = (col) => 36 + col * 64 - enemyW / 2
+  const stars = [
+    [18, 14], [48, 38], [86, 8], [132, 52], [180, 22], [214, 62],
+    [248, 12], [292, 44], [66, 72], [208, 86], [294, 86], [24, 96],
+  ]
   return (
-    <svg viewBox="0 0 320 120" className={className} role="img" aria-label="Ship with falling letters">
-      <rect x="0" y="0" width="320" height="120" fill="#0c1220" />
-      {['A', 'B', 'C', 'D'].map((l, i) => (
-        <g key={l}>
-          <rect x={40 + i * 70} y={20 + (i % 2) * 8} width="32" height="32" rx="4" fill={i === 2 ? accent : '#1e293b'} />
-          <text x={56 + i * 70} y={42 + (i % 2) * 8} fontSize="16" fontFamily="Inter, sans-serif" fontWeight="700" fill="#f1f5f9" textAnchor="middle">{l}</text>
-        </g>
+    <svg viewBox="0 0 320 120" className={className} role="img" aria-label="Pixel-art ship below four lettered invader enemies on a starfield">
+      <rect x="0" y="0" width="320" height="120" fill="#0a0f1c" />
+      {stars.map(([x, y], i) => (
+        <rect key={`s-${i}`} x={x} y={y} width={i % 3 === 0 ? 2 : 1} height={i % 3 === 0 ? 2 : 1} fill="#ffffff" opacity={i % 2 ? 0.6 : 0.9} />
       ))}
-      {/* bullet */}
-      <rect x="155" y="70" width="4" height="10" fill={accent} />
-      {/* ship */}
-      <polygon points="140,100 180,100 160,80" fill="#0ea5e9" />
+
+      {letters.map(({ letter, color, col }) => {
+        const ox = enemyXFor(col)
+        const pixels = []
+        for (let r = 0; r < ENEMY_ROWS.length; r++) {
+          for (let c = 0; c < ENEMY_ROWS[r].length; c++) {
+            if (ENEMY_ROWS[r][c] === 'X') {
+              pixels.push(
+                <rect key={`${letter}-${r}-${c}`} x={ox + c * P} y={enemyY + r * P} width={P} height={P} fill={color} />
+              )
+            }
+          }
+        }
+        return (
+          <g key={letter}>
+            {pixels}
+            <text
+              x={ox + enemyW / 2} y={enemyY + enemyH / 2 + 5}
+              fontSize="14" fontFamily="Inter, sans-serif" fontWeight="800"
+              fill="#0c1220" stroke="#ffffff" strokeWidth="1" paintOrder="stroke"
+              textAnchor="middle"
+            >{letter}</text>
+          </g>
+        )
+      })}
+
+      {/* laser bolt from ship */}
+      <rect x={160 - 1} y={shipOriginY - 16} width="3" height="9" fill="#67e8f9" />
+
+      {/* pixel-art ship */}
+      {SHIP_ROWS.flatMap((row, r) =>
+        row.split('').map((ch, c) => {
+          if (ch === '.') return null
+          const color = ch === 'A' ? '#f59e0b' : '#06b6d4'
+          return (
+            <rect
+              key={`ship-${r}-${c}`}
+              x={shipOriginX + c * P}
+              y={shipOriginY + r * P}
+              width={P}
+              height={P}
+              fill={color}
+            />
+          )
+        })
+      )}
     </svg>
   )
 }

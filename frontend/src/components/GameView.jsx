@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { motion } from 'framer-motion'
 import { api } from '../api/client.js'
 import { logError } from '../utils/errorLogger.js'
+import { getTeacherUsername } from '../utils/identity.js'
 import { PhaserGame } from './PhaserGame.jsx'
 import { ErrorBanner } from './ErrorBanner.jsx'
 import { NavigationConfirmModal } from './NavigationConfirmModal.jsx'
@@ -22,9 +23,13 @@ export function GameView({ gameId, onFinished, studentName }) {
     async function load() {
       try {
         const full = await api.getGameFull(gameId)
+        // Creator flow (no studentName prop): tag the session with the
+        // cached teacher username so self-play detection works and the
+        // report switches to second-person narrative.
+        const creatorName = studentName ? null : getTeacherUsername()
         const session = studentName
           ? await api.startStudentSession({ game_id: gameId, student_name: studentName })
-          : await api.startSession(gameId)
+          : await api.startSession(gameId, 'demo_student', creatorName)
         if (cancelled) return
         setGame(full.game)
         setLesson(full.lesson)

@@ -216,10 +216,10 @@ export const api = {
   getGameFull: (id) => request(`/api/games/${id}/full`),
 
   // Sessions
-  startSession: (game_id, student_id = 'demo_student') =>
+  startSession: (game_id, student_id = 'demo_student', student_name = null) =>
     request('/api/sessions/start', {
       method: 'POST',
-      body: JSON.stringify({ game_id, student_id }),
+      body: JSON.stringify({ game_id, student_id, student_name }),
     }),
   startStudentSession: ({ game_id, student_name }) =>
     request('/api/sessions/start', {

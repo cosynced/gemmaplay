@@ -1,17 +1,16 @@
 // ShooterAnswerScene
 //
-// Standalone Phaser 3 scene: Space-Invaders-style answer shooter. Four
-// labeled letter boxes (A/B/C/D) descend from above with their option text.
-// A ship at the bottom fires bullets upward. Shooting the letter whose
-// letterIdx matches the current question's answer_index clears the wave
-// and advances. Shooting a wrong letter costs a heart; the wrong letter
-// respawns from the top. Letters reaching the bottom also cost a heart and
-// respawn from the top.
+// Retro pixel-art Space-Invaders-style answer shooter. A chunky defender
+// ship at the bottom, four invader enemies descending with A/B/C/D labels
+// overlaid, a parallax starfield, and a health bar instead of hearts.
+// Shoot the enemy whose letter matches the question's correct answer.
+// Wrong shots do NOT destroy the enemy — the bullet is absorbed and the
+// enemy keeps descending. Health only drains when an enemy touches the
+// ship. Every 2 consecutive correct answers regenerate 1 health up to
+// the cap.
 //
 // Contract:
-//   init(data): { game, lesson, sessionId, onSessionEnd }
-//     game.game_type = 'shooter_answer'
-//     see Session 1/2 for the shared lesson + game shape.
+//   init(data): { game, lesson, sessionId, onSessionEnd, autoPlay? }
 
 import { incrementAttempts } from '../utils/attemptCounter.js'
 import { QuestionDispatcher } from '../utils/questionDispatcher.js'
@@ -28,10 +27,13 @@ import {
 import { shooterAutoPlay } from './AutoPlayAdapter.js'
 import { addHudPauseButton, createPauseOverlay } from './PauseOverlay.js'
 
+// ---------- Layout ----------
+
 const GAME_W = 960
 const GAME_H = 540
-// Top reserved space is split: shared AnswerGridHUD at the top, then the
-// thin HUD strip (score / hearts / question counter) beneath it.
+
+// Shared AnswerGridHUD at the top, then a thin HUD strip beneath it, then
+// the play area.
 const GRID_HUD_TOP = 8
 const GRID_HUD_OPTS = {
   questionHeight: 34,
@@ -48,40 +50,99 @@ const GRID_HUD_BOTTOM = 8 + 34 + 10 + 2 * 38 + 6 // 134
 const HUD_STRIP_H = 30
 const HUD_STRIP_TOP = GRID_HUD_BOTTOM + 6       // 140
 const PLAY_TOP = HUD_STRIP_TOP + HUD_STRIP_H + 5 // 175
-const PLAY_BOTTOM = 480
+const PLAY_BOTTOM = 490
 const COL_XS = [120, 360, 600, 840]
-const LETTER_BOX = 60
-const SHIP_Y = 470
-const SHIP_SIZE = 40
+const SHIP_Y = 480
 const SHIP_SPEED = 400
-const BULLET_SPEED = 500
-const LETTER_FALL = 10                       // starting descent speed
-// Descent-time floor = 70% of starting. Max speed = LETTER_FALL / 0.7.
-const LETTER_FALL_CAP = LETTER_FALL / 0.7
-const FIRE_INTERVAL = 220
-const WAVE_GAP_MS = 5000                      // breathing room between waves
-const READING_PAUSE_MS = 2000
-const START_HEARTS = 5
-const SCORE_CORRECT = 5
-// Each correct answer shortens descent TIME by 4% → speed factor = 1/0.96.
-const SPEED_BUMP_FACTOR = 1 / 0.96
+const BULLET_SPEED = 520
+
+// ---------- Pixel-art sprites ----------
+
+const PIXEL = 3
+const SHIP_PIXELS = [
+  '......A......',
+  '.....AMA.....',
+  '....MMMMM....',
+  '..MMMMMMMMM..',
+  '.MMMMMMMMMMM.',
+  'MMMMMMMMMMMMM',
+  'MMM.MMMMM.MMM',
+  'MM.........MM',
+]
+const ENEMY_PIXELS = [
+  'X........X',
+  '.X......X.',
+  '.XXXXXXXX.',
+  'XX.XXXX.XX',
+  'XXXXXXXXXX',
+  'X.XXXXXX.X',
+  'X.X....X.X',
+  '..XX..XX..',
+]
+const SHIP_TEX_W = SHIP_PIXELS[0].length * PIXEL  // 39
+const SHIP_TEX_H = SHIP_PIXELS.length * PIXEL     // 24
+const ENEMY_TEX_W = ENEMY_PIXELS[0].length * PIXEL // 30
+const ENEMY_TEX_H = ENEMY_PIXELS.length * PIXEL    // 24
 
 const COLOR = {
-  bg: 0x0c1220,
+  bg: 0x0a0f1c,
   hud: 0x0f172a,
   stroke: 0x1e293b,
-  ship: 0x0ea5e9,
-  bullet: 0xfacc15,
-  dimmed: 0x475569,
-  A: OPTION_COLORS[0],
-  B: OPTION_COLORS[1],
-  C: OPTION_COLORS[2],
-  D: OPTION_COLORS[3],
-  heartsHex: '#ef4444',
+  shipBody: 0x06b6d4,
+  shipAccent: 0xf59e0b,
+  bullet: 0x67e8f9,
+  starA: 0xffffff,
+  starB: 0x94a3b8,
   textHex: '#e2e8f0',
+  healthGreen: 0x10b981,
+  healthAmber: 0xf59e0b,
+  healthRed: 0xef4444,
 }
 
 const LETTER_KEYS = ['A', 'B', 'C', 'D']
+
+// ---------- Gameplay tuning ----------
+
+const FIRE_INTERVAL = 150
+const DESCENT_SECONDS_START = 15
+const DESCENT_SECONDS_FLOOR = 8
+const DESCENT_SPEED_FACTOR = 0.96   // descent time × 0.96 per correct
+const READING_PAUSE_MS = 2000
+const MAX_HEALTH = 20
+const START_HEALTH = 20
+const REGEN_EVERY_N_CORRECT = 2
+const SCORE_CORRECT = 10
+const WAVE_GAP_MS = 800
+const WOBBLE_AMPLITUDE = 12
+const WOBBLE_PERIOD_MS = 1800
+
+// ---------- Pixel texture helpers ----------
+
+function pixelTexture(scene, key, pattern, colorByChar) {
+  if (scene.textures.exists(key)) return
+  const rows = pattern.length
+  const cols = pattern[0].length
+  const g = scene.make.graphics({ x: 0, y: 0, add: false })
+  for (let r = 0; r < rows; r++) {
+    for (let c = 0; c < cols; c++) {
+      const ch = pattern[r][c]
+      const color = colorByChar[ch]
+      if (color == null) continue
+      g.fillStyle(color, 1)
+      g.fillRect(c * PIXEL, r * PIXEL, PIXEL, PIXEL)
+    }
+  }
+  g.generateTexture(key, cols * PIXEL, rows * PIXEL)
+  g.destroy()
+}
+
+function healthBarColor(ratio) {
+  if (ratio > 0.6) return COLOR.healthGreen
+  if (ratio > 0.3) return COLOR.healthAmber
+  return COLOR.healthRed
+}
+
+// ---------- Scene ----------
 
 export class ShooterAnswerScene extends Phaser.Scene {
   constructor() {
@@ -96,7 +157,9 @@ export class ShooterAnswerScene extends Phaser.Scene {
     this.autoPlay = !!data.autoPlay
 
     this.score = 0
-    this.hearts = START_HEARTS
+    this.correctCount = 0
+    this.health = START_HEALTH
+    this.consecutiveCorrect = 0
     this.hintsUsed = 0
     this.startTs = Date.now()
     this.ended = false
@@ -106,6 +169,8 @@ export class ShooterAnswerScene extends Phaser.Scene {
     this._readingPauseUntil = 0
     this._readingBadge = null
     this._didInitialCountdown = false
+    this.waveState = 'idle' // 'idle' | 'active' | 'resolving'
+    this.descentSeconds = DESCENT_SECONDS_START
 
     this.hintPendingForNextWave = false
     this.currentHintUsed = false
@@ -121,9 +186,11 @@ export class ShooterAnswerScene extends Phaser.Scene {
   _snapshot() {
     return {
       score: this.score,
-      hearts: this.hearts,
+      correctCount: this.correctCount,
+      health: this.health,
+      consecutiveCorrect: this.consecutiveCorrect,
       shipX: this.ship ? this.ship.x : null,
-      descentSpeed: this.descentSpeed,
+      descentSeconds: this.descentSeconds,
       elapsedMs: Date.now() - this.startTs - (this._accumulatedPauseMs || 0),
       attemptNumber: this.attemptNumber,
       dispatcher: this.qd ? this.qd.snapshot() : null,
@@ -134,14 +201,16 @@ export class ShooterAnswerScene extends Phaser.Scene {
     try {
       if (!snap || !this.qd.restore(snap.dispatcher)) return false
       this.score = snap.score ?? 0
-      this.hearts = snap.hearts ?? this.hearts
-      this.descentSpeed = snap.descentSpeed ?? this.descentSpeed
+      this.correctCount = snap.correctCount ?? 0
+      this.health = Math.min(Math.max(snap.health ?? START_HEALTH, 0), MAX_HEALTH)
+      this.consecutiveCorrect = snap.consecutiveCorrect ?? 0
+      this.descentSeconds = snap.descentSeconds ?? DESCENT_SECONDS_START
       this.startTs = Date.now() - (snap.elapsedMs | 0)
       this._accumulatedPauseMs = 0
       if (snap.attemptNumber) this.attemptNumber = snap.attemptNumber
       if (snap.shipX != null) this._savedShipX = snap.shipX
       if (this.scoreText) this.scoreText.setText(`Score: ${this.score}`)
-      if (this.heartsText) this._renderHearts()
+      this._renderHealthBar()
       return true
     } catch (e) {
       console.error('Shooter restore failed', e)
@@ -154,39 +223,34 @@ export class ShooterAnswerScene extends Phaser.Scene {
     try { saveGameState(this._gameId, this._snapshot()) } catch { /* ignore */ }
   }
 
-  // ---------- Preload: generate textures ----------
+  // ---------- Preload: generate pixel-art textures ----------
 
   preload() {
-    const g = this.add.graphics()
-
-    // Ship — cyan triangle pointing up
-    g.fillStyle(COLOR.ship)
-    g.fillTriangle(SHIP_SIZE / 2, 0, 0, SHIP_SIZE, SHIP_SIZE, SHIP_SIZE)
-    g.fillStyle(0xffffff, 0.6)
-    g.fillRect(SHIP_SIZE / 2 - 2, SHIP_SIZE / 2 + 2, 4, 8)
-    g.generateTexture('sa-ship', SHIP_SIZE, SHIP_SIZE)
-    g.clear()
-
-    // Bullet — 4×12 yellow rect
-    g.fillStyle(COLOR.bullet)
-    g.fillRect(0, 0, 4, 12)
-    g.generateTexture('sa-bullet', 4, 12)
-    g.clear()
-
-    const makeLetterBox = (color, key) => {
-      g.fillStyle(color)
-      g.fillRoundedRect(0, 0, LETTER_BOX, LETTER_BOX, 8)
-      g.lineStyle(2, 0xffffff, 0.6)
-      g.strokeRoundedRect(1, 1, LETTER_BOX - 2, LETTER_BOX - 2, 8)
-      g.generateTexture(key, LETTER_BOX, LETTER_BOX)
-      g.clear()
+    pixelTexture(this, 'sa-ship', SHIP_PIXELS, {
+      M: COLOR.shipBody,
+      A: COLOR.shipAccent,
+    })
+    for (let i = 0; i < 4; i++) {
+      pixelTexture(this, `sa-enemy-${LETTER_KEYS[i]}`, ENEMY_PIXELS, {
+        X: OPTION_COLORS[i],
+      })
     }
-    makeLetterBox(COLOR.A, 'sa-letter-A')
-    makeLetterBox(COLOR.B, 'sa-letter-B')
-    makeLetterBox(COLOR.C, 'sa-letter-C')
-    makeLetterBox(COLOR.D, 'sa-letter-D')
 
-    g.destroy()
+    // Bullet: 3x9 cyan pixel bolt.
+    const bg = this.make.graphics({ x: 0, y: 0, add: false })
+    bg.fillStyle(COLOR.bullet, 1)
+    bg.fillRect(0, 0, 3, 9)
+    bg.fillStyle(0xffffff, 1)
+    bg.fillRect(1, 0, 1, 3)
+    bg.generateTexture('sa-bullet', 3, 9)
+    bg.destroy()
+
+    // Star: 1x1 white pixel scaled per-star for variety.
+    const sg = this.make.graphics({ x: 0, y: 0, add: false })
+    sg.fillStyle(0xffffff, 1)
+    sg.fillRect(0, 0, 1, 1)
+    sg.generateTexture('sa-star', 1, 1)
+    sg.destroy()
   }
 
   // ---------- Create ----------
@@ -194,24 +258,20 @@ export class ShooterAnswerScene extends Phaser.Scene {
   create() {
     this.cameras.main.setBackgroundColor(COLOR.bg)
 
-    // Faint star field in the play area
-    for (let i = 0; i < 70; i++) {
-      const x = Phaser.Math.Between(0, GAME_W)
-      const y = Phaser.Math.Between(PLAY_TOP - 10, PLAY_BOTTOM + 40)
-      const r = Phaser.Math.Between(1, 2)
-      this.add.circle(x, y, r, 0xffffff, Phaser.Math.FloatBetween(0.2, 0.5))
-    }
-
+    this._buildStarfield()
     this._buildHUD()
 
     // Ship
     this.ship = this.add.image(GAME_W / 2, SHIP_Y, 'sa-ship').setDepth(50)
     this.lastFireTs = 0
+    this._muzzleFlash = null
 
     this.bullets = []
+    // `letters` keeps its historical name so shooterAutoPlay still finds
+    // the target list.
     this.letters = []
 
-    // Input (poll in update for continuous movement + firing)
+    // Input
     this.keys = null
     this._pointerStart = null
     this._pointerDown = false
@@ -226,15 +286,13 @@ export class ShooterAnswerScene extends Phaser.Scene {
         space: Phaser.Input.Keyboard.KeyCodes.SPACE,
       })
 
-      // Pointer (mouse + touch): drag to steer, tap a letter to target-fire,
-      // tap elsewhere or swipe up to fire straight.
       this.input.on('pointerdown', (p) => {
         this._pointerStart = { x: p.x, y: p.y, t: Date.now() }
         this._pointerDown = true
-        this._dragShipTo(p.x)
+        if (p.y > PLAY_TOP) this._dragShipTo(p.x)
       })
       this.input.on('pointermove', (p) => {
-        if (this._pointerDown) this._dragShipTo(p.x)
+        if (this._pointerDown && p.y > PLAY_TOP) this._dragShipTo(p.x)
       })
       this.input.on('pointerup', (p) => {
         this._pointerDown = false
@@ -242,16 +300,10 @@ export class ShooterAnswerScene extends Phaser.Scene {
         const dx = p.x - this._pointerStart.x
         const dy = p.y - this._pointerStart.y
         const dt = Date.now() - this._pointerStart.t
-        const SWIPE_THRESHOLD = 30
         const TAP_MAX_MOVE = 10
         const TAP_MAX_TIME = 250
-
         if (Math.abs(dx) < TAP_MAX_MOVE && Math.abs(dy) < TAP_MAX_MOVE && dt < TAP_MAX_TIME) {
-          this._handleTap(p.x, p.y)
-        } else if (Math.abs(dx) > Math.abs(dy) && Math.abs(dx) > SWIPE_THRESHOLD) {
-          this._handleSwipe(dx > 0 ? 'right' : 'left')
-        } else if (Math.abs(dy) > SWIPE_THRESHOLD) {
-          this._handleSwipe(dy > 0 ? 'down' : 'up')
+          this._fireStraight()
         }
         this._pointerStart = null
       })
@@ -280,69 +332,108 @@ export class ShooterAnswerScene extends Phaser.Scene {
     if (this.autoPlay) this._autoPlayCtl = shooterAutoPlay(this)
   }
 
+  _buildStarfield() {
+    this._stars = []
+    const count = 80
+    for (let i = 0; i < count; i++) {
+      const x = Phaser.Math.Between(0, GAME_W)
+      const y = Phaser.Math.Between(0, GAME_H)
+      const scale = Phaser.Math.Between(1, 3)
+      const speed = Phaser.Math.Between(6, 22) // px/s; parallax layers
+      const alpha = Phaser.Math.FloatBetween(0.3, 0.9)
+      const s = this.add.image(x, y, 'sa-star').setDepth(1)
+        .setScale(scale).setAlpha(alpha)
+      if (scale === 1) s.setTintFill(COLOR.starB)
+      this._stars.push({ sprite: s, speed })
+    }
+  }
+
   _dragShipTo(x) {
     if (this.ended || !this.ship) return
-    this.ship.x = Phaser.Math.Clamp(x, 30, GAME_W - 30)
+    this.ship.x = Phaser.Math.Clamp(x, SHIP_TEX_W / 2, GAME_W - SHIP_TEX_W / 2)
   }
 
-  _handleSwipe(dir) {
-    if (dir === 'up') this._fireStraight()
-  }
-
-  _handleTap(x, y) {
-    // If the tap hits a falling letter, fire a targeted bullet at it.
-    for (const L of this.letters) {
-      if (Math.abs(L.sprite.x - x) < LETTER_BOX / 2 &&
-          Math.abs(L.y - y) < LETTER_BOX / 2) {
-        this._fireAt(L.sprite.x, L.y)
-        return
-      }
-    }
-    // Otherwise: treat as fire-straight-up.
-    this._fireStraight()
-  }
+  // ---------- HUD ----------
 
   _buildHUD() {
-    // HUD strip (below the shared answer grid) — score, question counter,
-    // hearts. The question banner + 2x2 grid above come from AnswerGridHUD.
     this.hudBar = this.add.rectangle(
       GAME_W / 2, HUD_STRIP_TOP + HUD_STRIP_H / 2, GAME_W, HUD_STRIP_H, COLOR.hud, 0.85,
     ).setStrokeStyle(1, COLOR.stroke).setDepth(200)
 
-    this.scoreText = this.add.text(16, HUD_STRIP_TOP + HUD_STRIP_H / 2, 'Score: 0', {
-      fontFamily: 'Inter, system-ui, sans-serif', fontSize: '14px', color: COLOR.textHex,
-    }).setOrigin(0, 0.5).setDepth(201)
+    // Health bar (top-left of the HUD strip)
+    const hbX = 16
+    const hbY = HUD_STRIP_TOP + HUD_STRIP_H / 2 - 7
+    const hbW = 200
+    const hbH = 14
+    this._healthBar = {
+      x: hbX, y: hbY, w: hbW, h: hbH,
+      frame: this.add.graphics().setDepth(201),
+      fill: this.add.graphics().setDepth(202),
+    }
+    this._renderHealthBar()
+
+    this.scoreText = this.add.text(
+      hbX + hbW + 18, HUD_STRIP_TOP + HUD_STRIP_H / 2, 'Score: 0',
+      { fontFamily: 'Inter, system-ui, sans-serif', fontSize: '14px', color: COLOR.textHex },
+    ).setOrigin(0, 0.5).setDepth(201)
 
     this.questionCounterText = this.add.text(
-      130, HUD_STRIP_TOP + HUD_STRIP_H / 2, 'Question 1',
+      hbX + hbW + 18 + 120, HUD_STRIP_TOP + HUD_STRIP_H / 2, 'Question 1',
       { fontFamily: 'Inter, system-ui, sans-serif', fontSize: '14px',
         color: COLOR.textHex, fontStyle: 'bold' },
     ).setOrigin(0, 0.5).setDepth(201)
-
-    this.heartsText = this.add.text(GAME_W - 60, HUD_STRIP_TOP + HUD_STRIP_H / 2,
-      Array(START_HEARTS).fill('\u2665').join(' '), {
-      fontFamily: 'Inter, system-ui, sans-serif', fontSize: '18px', color: COLOR.heartsHex,
-    }).setOrigin(1, 0.5).setDepth(201)
   }
 
-  _renderHearts() {
-    const n = Math.max(this.hearts, 0)
-    this.heartsText.setText(n > 0 ? Array(n).fill('\u2665').join(' ') : '—')
+  _renderHealthBar() {
+    const hb = this._healthBar
+    if (!hb) return
+    hb.frame.clear()
+    hb.frame.lineStyle(2, 0x334155, 1)
+    hb.frame.strokeRoundedRect(hb.x, hb.y, hb.w, hb.h, 4)
+    hb.fill.clear()
+    const ratio = Math.max(0, Math.min(1, this.health / MAX_HEALTH))
+    if (ratio <= 0) return
+    const segGap = 1
+    const segs = MAX_HEALTH
+    const segW = (hb.w - 4 - (segs - 1) * segGap) / segs
+    const segH = hb.h - 4
+    const color = healthBarColor(ratio)
+    hb.fill.fillStyle(color, 1)
+    for (let i = 0; i < this.health; i++) {
+      hb.fill.fillRect(
+        hb.x + 2 + i * (segW + segGap),
+        hb.y + 2,
+        segW,
+        segH,
+      )
+    }
+  }
+
+  _flashHealthBar(color) {
+    if (!this._healthBar) return
+    const pulse = this.add.rectangle(
+      this._healthBar.x + this._healthBar.w / 2,
+      this._healthBar.y + this._healthBar.h / 2,
+      this._healthBar.w + 6,
+      this._healthBar.h + 6,
+      color,
+      0.45,
+    ).setDepth(203)
+    this.tweens.add({
+      targets: pulse, alpha: 0, duration: 280, ease: 'Sine.easeOut',
+      onComplete: () => pulse.destroy(),
+    })
   }
 
   // ---------- Level lifecycle ----------
 
   _startLevel() {
-    this.descentSpeed = LETTER_FALL
     this._loadNextQuestion()
     if (!this.activeQuestion) return
     this._spawnWave()
   }
 
   _loadNextQuestion() {
-    // Dispatcher is infinite: auto-reshuffles on exhaustion. If we somehow
-    // still get null, loop back to the first question — game only ends at
-    // 0 lives.
     let q = this.qd.current()
     if (!q) {
       this.qd.shuffleRemaining()
@@ -373,13 +464,10 @@ export class ShooterAnswerScene extends Phaser.Scene {
     this.letters = []
   }
 
-  // ---------- Wave / letter spawning ----------
-
   _spawnWave() {
     if (!this.activeQuestion) return
     const q = this.activeQuestion
 
-    // Determine which letters to hide this wave (hint)
     let hidden = new Set()
     if (this.hintPendingForNextWave) {
       const wrongs = [0, 1, 2, 3].filter((i) => i !== q.answer_index)
@@ -396,47 +484,63 @@ export class ShooterAnswerScene extends Phaser.Scene {
     Phaser.Utils.Array.Shuffle(columns)
 
     for (let i = 0; i < visibleLetters.length; i++) {
-      this._spawnLetter(visibleLetters[i], columns[i], PLAY_TOP)
+      this._spawnEnemy(visibleLetters[i], columns[i])
     }
 
-    // Freeze the letters in place for a beat so the student can read the
-    // question and scan the options before anything starts falling.
+    this.waveState = 'active'
     this._beginReadingPause(READING_PAUSE_MS)
   }
 
-  _spawnLetter(letterIdx, col, y) {
-    const x = COL_XS[col]
+  _spawnEnemy(letterIdx, col) {
+    const baseX = COL_XS[col]
     const letter = LETTER_KEYS[letterIdx]
-    const sprite = this.add.image(x, y, `sa-letter-${letter}`).setDepth(10)
-    const letterLabel = this.add.text(x, y, letter, {
-      fontFamily: 'Inter, system-ui, sans-serif', fontSize: '36px',
-      color: '#0c1220', fontStyle: 'bold',
+    const sprite = this.add.image(baseX, PLAY_TOP, `sa-enemy-${letter}`).setDepth(10)
+    const letterLabel = this.add.text(baseX, PLAY_TOP, letter, {
+      fontFamily: 'Inter, system-ui, sans-serif',
+      fontSize: '22px',
+      color: '#0c1220',
+      fontStyle: 'bold',
+      stroke: '#ffffff',
+      strokeThickness: 3,
     }).setOrigin(0.5).setDepth(11)
-    this.letters.push({ sprite, letterLabel, letterIdx, col, y })
+    const wobblePhase = Phaser.Math.FloatBetween(0, Math.PI * 2)
+    // `sprite.x` / `y` stay stable; `baseX` + phase drive the wobble.
+    this.letters.push({
+      sprite, letterLabel, letterIdx, col,
+      baseX, y: PLAY_TOP, wobblePhase,
+    })
   }
 
   _destroyLetter(L) {
-    L.sprite.destroy()
-    L.letterLabel.destroy()
+    try { L.sprite.destroy() } catch { /* torn */ }
+    try { L.letterLabel.destroy() } catch { /* torn */ }
   }
 
   // ---------- Game loop ----------
 
-  update(_, delta) {
+  update(time, delta) {
     if (this.ended) return
     if (this._isPaused) return
-    if (this._isReading()) return
     const dt = delta / 1000
 
+    // Starfield drifts regardless of reading pause so the scene breathes.
+    for (const s of this._stars) {
+      s.sprite.y += s.speed * dt
+      if (s.sprite.y > GAME_H + 4) {
+        s.sprite.y = -4
+        s.sprite.x = Phaser.Math.Between(0, GAME_W)
+      }
+    }
+
+    if (this._isReading()) return
+
     if (this.keys) {
-      // Ship movement
       const leftDown = this.keys.left.isDown || this.keys.a.isDown
       const rightDown = this.keys.right.isDown || this.keys.d.isDown
       if (leftDown && !rightDown) this.ship.x -= SHIP_SPEED * dt
       else if (rightDown && !leftDown) this.ship.x += SHIP_SPEED * dt
-      this.ship.x = Phaser.Math.Clamp(this.ship.x, 20, GAME_W - 20)
+      this.ship.x = Phaser.Math.Clamp(this.ship.x, SHIP_TEX_W / 2, GAME_W - SHIP_TEX_W / 2)
 
-      // Firing
       const fireDown = this.keys.space.isDown || this.keys.up.isDown || this.keys.w.isDown
       if (fireDown) this._fireStraight()
     }
@@ -444,10 +548,8 @@ export class ShooterAnswerScene extends Phaser.Scene {
     // Bullets
     const bSurvivors = []
     for (const b of this.bullets) {
-      b.sprite.x += b.vx * dt
       b.sprite.y += b.vy * dt
-      if (b.sprite.y < PLAY_TOP - 20 ||
-          b.sprite.x < -20 || b.sprite.x > GAME_W + 20) {
+      if (b.sprite.y < PLAY_TOP - 20) {
         b.sprite.destroy()
         continue
       }
@@ -455,67 +557,89 @@ export class ShooterAnswerScene extends Phaser.Scene {
     }
     this.bullets = bSurvivors
 
-    // Letters (fall + bottom respawn)
+    // Enemy descent + wobble. Descent speed is derived from descentSeconds
+    // so the adaptive rule maps "time to fall" directly.
+    const descentSpeed = (PLAY_BOTTOM - PLAY_TOP) / this.descentSeconds
+    const wobble = (phase) =>
+      Math.sin((time / WOBBLE_PERIOD_MS) * Math.PI * 2 + phase) * WOBBLE_AMPLITUDE
+
     const lSurvivors = []
+    let correctEscaped = false
     for (const L of this.letters) {
-      L.y += this.descentSpeed * dt
-      if (L.y >= PLAY_BOTTOM) {
-        this.hearts -= 1
-        this._renderHearts()
-        this._flash(0xef4444)
-        if (this.hearts <= 0) {
-          this._destroyLetter(L)
-          this._endSession()
-          return
-        }
-        L.y = PLAY_TOP
+      // During wave resolution (correct hit / wave-lost fade), let the
+      // fade tweens move the sprites; skip descent + touch detection.
+      if (this.waveState !== 'active') {
+        lSurvivors.push(L)
+        continue
       }
+      L.y += descentSpeed * dt
+      L.sprite.x = L.baseX + wobble(L.wobblePhase)
       L.sprite.y = L.y
+      L.letterLabel.x = L.sprite.x
       L.letterLabel.y = L.y
+      if (L.y >= PLAY_BOTTOM) {
+        const wasCorrect = this.activeQuestion
+          && L.letterIdx === this.activeQuestion.answer_index
+        this._onEnemyTouchShip(L)
+        if (wasCorrect) correctEscaped = true
+        continue
+      }
       lSurvivors.push(L)
     }
     this.letters = lSurvivors
+    if (this.health <= 0 && !this.ended) {
+      return this._endSession()
+    }
+    if (correctEscaped && this.waveState === 'active') {
+      this._endWaveNoCorrect()
+    }
 
-    // Collision: bullet vs letter
-    for (let bi = this.bullets.length - 1; bi >= 0; bi--) {
-      const b = this.bullets[bi]
-      for (let li = this.letters.length - 1; li >= 0; li--) {
-        const L = this.letters[li]
-        if (Math.abs(b.sprite.x - L.sprite.x) < LETTER_BOX / 2 &&
-            Math.abs(b.sprite.y - L.y) < LETTER_BOX / 2) {
-          b.sprite.destroy()
-          this.bullets.splice(bi, 1)
-          this._handleHit(L, li)
-          break
+    // Bullet vs enemy collision
+    if (this.waveState === 'active') {
+      for (let bi = this.bullets.length - 1; bi >= 0; bi--) {
+        const b = this.bullets[bi]
+        for (let li = this.letters.length - 1; li >= 0; li--) {
+          const L = this.letters[li]
+          if (Math.abs(b.sprite.x - L.sprite.x) < ENEMY_TEX_W / 2
+              && Math.abs(b.sprite.y - L.y) < ENEMY_TEX_H / 2) {
+            b.sprite.destroy()
+            this.bullets.splice(bi, 1)
+            this._handleHit(L, li)
+            break
+          }
         }
       }
     }
   }
 
   _fireStraight() {
-    if (!this._canFire()) return
-    const sprite = this.add.image(this.ship.x, SHIP_Y - SHIP_SIZE / 2 - 4, 'sa-bullet').setDepth(20)
-    this.bullets.push({ sprite, vx: 0, vy: -BULLET_SPEED })
+    if (!this._canFire() || !this.ship) return
+    const sprite = this.add.image(this.ship.x, SHIP_Y - SHIP_TEX_H / 2 - 2, 'sa-bullet').setDepth(20)
+    this.bullets.push({ sprite, vy: -BULLET_SPEED })
     this.lastFireTs = Date.now()
+    this._muzzleFlashTick()
   }
 
-  _fireAt(targetX, targetY) {
-    if (!this._canFire()) return
-    const srcX = this.ship.x
-    const srcY = SHIP_Y - SHIP_SIZE / 2 - 4
-    const dx = targetX - srcX
-    const dy = targetY - srcY
-    const len = Math.max(Math.hypot(dx, dy), 1)
-    const vx = (dx / len) * BULLET_SPEED
-    const vy = (dy / len) * BULLET_SPEED
-    const sprite = this.add.image(srcX, srcY, 'sa-bullet').setDepth(20)
-    sprite.setRotation(Math.atan2(vy, vx) + Math.PI / 2)
-    this.bullets.push({ sprite, vx, vy })
-    this.lastFireTs = Date.now()
+  // Kept for the autoplay adapter's targeted-fire calls.
+  _fireAt(_targetX, _targetY) {
+    this._fireStraight()
   }
 
   _canFire() {
     return Date.now() - this.lastFireTs >= FIRE_INTERVAL
+  }
+
+  _muzzleFlashTick() {
+    if (!this.ship) return
+    if (this._muzzleFlash) { try { this._muzzleFlash.destroy() } catch { /* ignore */ } }
+    const flash = this.add.circle(
+      this.ship.x, SHIP_Y - SHIP_TEX_H / 2, 6, 0xfef9c3, 0.9,
+    ).setDepth(49)
+    this._muzzleFlash = flash
+    this.tweens.add({
+      targets: flash, scale: 1.8, alpha: 0, duration: 110, ease: 'Sine.easeOut',
+      onComplete: () => { try { flash.destroy() } catch { /* ignore */ } },
+    })
   }
 
   // ---------- Resolution ----------
@@ -526,22 +650,38 @@ export class ShooterAnswerScene extends Phaser.Scene {
     this.qd.submitAnswer(L.letterIdx)
 
     if (isCorrect) {
+      this.waveState = 'resolving'
       this.letters.splice(li, 1)
-      this._explodeLetter(L)
+      this._burst(L.sprite.x, L.y, 0x10b981)
+      this._destroyLetter(L)
+      // Fade remaining enemies (they sink harmlessly).
       for (const other of this.letters) {
         this.tweens.add({
           targets: [other.sprite, other.letterLabel],
-          alpha: 0, duration: 250,
+          alpha: 0, y: other.y + 40, duration: 320, ease: 'Sine.easeIn',
           onComplete: () => this._destroyLetter(other),
         })
       }
       this.letters = []
       this.score += SCORE_CORRECT
+      this.correctCount += 1
+      this.consecutiveCorrect += 1
       this.scoreText.setText(`Score: ${this.score}`)
       this._flash(0x10b981)
+
+      if (this.consecutiveCorrect > 0
+          && this.consecutiveCorrect % REGEN_EVERY_N_CORRECT === 0
+          && this.health < MAX_HEALTH) {
+        this.health += 1
+        this._renderHealthBar()
+        this._flashHealthBar(COLOR.healthGreen)
+        this._banner('+1 health', '#10b981')
+      }
+
       this._maybeSpeedBump()
       this.qd.advance()
       this._saveSnapshot()
+
       this.time.delayedCall(WAVE_GAP_MS, () => {
         if (this.ended) return
         this._loadNextQuestion()
@@ -549,57 +689,116 @@ export class ShooterAnswerScene extends Phaser.Scene {
         this._spawnWave()
       })
     } else {
-      // Wrong shot: cost a life, respawn the letter so the wave is still solvable.
-      const letterIdx = L.letterIdx
-      const col = L.col
-      this.letters.splice(li, 1)
-      this._explodeLetter(L)
-      this.hearts -= 1
-      this._renderHearts()
-      this._flash(0xef4444)
-      if (this.hearts <= 0) return this._endSession()
-      this.time.delayedCall(500, () => {
-        if (this.ended) return
-        this._spawnLetter(letterIdx, col, PLAY_TOP)
-      })
+      // Wrong shot: bullet is absorbed, enemy keeps descending. Streak
+      // resets and we play a small spark so the player gets feedback,
+      // but no health is lost here — the real cost is letting the enemy
+      // reach the ship.
+      this.consecutiveCorrect = 0
+      this._spark(L.sprite.x, L.y, 0xef4444)
+      this._flinchEnemy(L)
     }
   }
 
+  _onEnemyTouchShip(L) {
+    this.consecutiveCorrect = 0
+    this.health -= 1
+    this._renderHealthBar()
+    this._flashHealthBar(COLOR.healthRed)
+    this._flash(0xef4444)
+    this.cameras.main.shake(140, 0.004)
+    this._burst(L.sprite.x, L.y, 0xef4444)
+    this._destroyLetter(L)
+  }
+
+  _endWaveNoCorrect() {
+    // Correct enemy escaped past the ship; the wave can no longer be
+    // resolved via shooting. Clear remaining enemies and advance.
+    this.waveState = 'resolving'
+    for (const L of this.letters) {
+      const lc = L
+      this.tweens.add({
+        targets: [lc.sprite, lc.letterLabel],
+        alpha: 0, y: lc.y + 40, duration: 320, ease: 'Sine.easeIn',
+        onComplete: () => this._destroyLetter(lc),
+      })
+    }
+    this.letters = []
+    this.qd.advance()
+    this._saveSnapshot()
+    this.time.delayedCall(WAVE_GAP_MS, () => {
+      if (this.ended) return
+      this._loadNextQuestion()
+      if (!this.activeQuestion) return
+      this._spawnWave()
+    })
+  }
+
+  _flinchEnemy(L) {
+    // Brief white pulse so the player can tell the bullet connected but
+    // didn't kill. Doesn't move the enemy — descent continues in update.
+    if (!L || !L.sprite) return
+    this.tweens.add({
+      targets: L.sprite,
+      scale: { from: 1.15, to: 1 },
+      duration: 180,
+      ease: 'Sine.easeOut',
+    })
+  }
+
   _maybeSpeedBump() {
-    // Adaptive speed: each correct answer shortens descent time by 4%
-    // (cap at 70% of starting time). Called only from the correct branch.
-    const next = Math.min(LETTER_FALL_CAP, this.descentSpeed * SPEED_BUMP_FACTOR)
-    if (next > this.descentSpeed) {
-      this.descentSpeed = next
+    // Adaptive rule: each correct answer shortens descent time by 4%
+    // (floor DESCENT_SECONDS_FLOOR). Wrong answers leave it alone.
+    const next = Math.max(DESCENT_SECONDS_FLOOR, this.descentSeconds * DESCENT_SPEED_FACTOR)
+    if (next < this.descentSeconds) {
+      this.descentSeconds = next
       this._banner('Speeding up!', '#10b981')
     }
   }
 
-  // ---------- Visual helpers ----------
+  // ---------- Particle-ish visual helpers ----------
 
-  _explodeLetter(L) {
-    for (let i = 0; i < 8; i++) {
-      const ang = (i / 8) * Math.PI * 2
-      const c = this.add.circle(L.sprite.x, L.y, 3, 0xffffff, 0.95).setDepth(30)
+  _burst(x, y, color) {
+    for (let i = 0; i < 10; i++) {
+      const ang = (i / 10) * Math.PI * 2 + Phaser.Math.FloatBetween(-0.2, 0.2)
+      const dist = Phaser.Math.Between(30, 48)
+      const size = PIXEL
+      const shard = this.add.rectangle(x, y, size, size, color, 1).setDepth(30)
       this.tweens.add({
-        targets: c,
-        x: L.sprite.x + Math.cos(ang) * 42,
-        y: L.y + Math.sin(ang) * 42,
+        targets: shard,
+        x: x + Math.cos(ang) * dist,
+        y: y + Math.sin(ang) * dist,
         alpha: 0,
-        scale: 0.2,
         duration: 420,
-        onComplete: () => c.destroy(),
+        ease: 'Sine.easeOut',
+        onComplete: () => { try { shard.destroy() } catch { /* ignore */ } },
       })
     }
-    this._destroyLetter(L)
+  }
+
+  _spark(x, y, color) {
+    // Small impact shower for "bullet hit but didn't kill".
+    for (let i = 0; i < 4; i++) {
+      const ang = Phaser.Math.FloatBetween(0, Math.PI * 2)
+      const dist = Phaser.Math.Between(8, 16)
+      const shard = this.add.rectangle(x, y, PIXEL, PIXEL, color, 1).setDepth(30)
+      this.tweens.add({
+        targets: shard,
+        x: x + Math.cos(ang) * dist,
+        y: y + Math.sin(ang) * dist,
+        alpha: 0,
+        duration: 220,
+        ease: 'Sine.easeOut',
+        onComplete: () => { try { shard.destroy() } catch { /* ignore */ } },
+      })
+    }
   }
 
   _flash(color) {
     if (this.autoPlay) return
-    this.cameras.main.flash(160, (color >> 16) & 0xff, (color >> 8) & 0xff, color & 0xff)
+    this.cameras.main.flash(140, (color >> 16) & 0xff, (color >> 8) & 0xff, color & 0xff)
   }
 
-  _banner(text, color, duration = 1500) {
+  _banner(text, color, duration = 1200) {
     const t = this.add.text(
       GAME_W / 2, HUD_STRIP_TOP + HUD_STRIP_H + 8, text, {
         fontFamily: 'Inter, system-ui, sans-serif', fontSize: '15px', color,
@@ -622,19 +821,21 @@ export class ShooterAnswerScene extends Phaser.Scene {
 
   _showGameOver() {
     this.ended = true
+    this._clearLetters()
     if (this._gameId) { try { clearGameState(this._gameId) } catch { /* ignore */ } }
     const cx = GAME_W / 2
     const cy = GAME_H / 2
-    this.add.rectangle(cx, cy, GAME_W, GAME_H, 0x0c1220, 0.88).setDepth(500)
-    this.add.text(cx, cy - 140, 'Run over', {
-      fontFamily: 'Inter, system-ui, sans-serif', fontSize: '40px',
-      color: '#f1f5f9', fontStyle: 'bold',
+    this.add.rectangle(cx, cy, GAME_W, GAME_H, 0x0a0f1c, 0.9).setDepth(500)
+    this.add.text(cx, cy - 140, 'GAME OVER', {
+      fontFamily: 'Inter, system-ui, sans-serif', fontSize: '48px',
+      color: '#f87171', fontStyle: 'bold',
+      stroke: '#0a0f1c', strokeThickness: 4,
     }).setOrigin(0.5).setDepth(501)
     const prog = this.qd.getProgress()
     const elapsed = this._effectiveTimeSeconds()
     const pct = prog.answered > 0 ? Math.round((prog.correct / prog.answered) * 100) : 0
     this.add.text(cx, cy - 30, [
-      `You reached question ${prog.answered}`,
+      `Reached question ${prog.answered}`,
       `Score: ${this.score}`,
       `Correct: ${prog.correct}/${prog.answered} (${pct}%)`,
       `Time: ${elapsed}s`,
@@ -644,7 +845,7 @@ export class ShooterAnswerScene extends Phaser.Scene {
       color: '#e2e8f0', align: 'center',
     }).setOrigin(0.5).setDepth(501)
 
-    this._makeButton(cx - 90, cy + 90, 'Play Again', 0x0ea5e9,
+    this._makeButton(cx - 90, cy + 90, 'Play Again', 0x06b6d4,
       () => this._resetAndRestart())
     this._makeButton(cx + 90, cy + 90, 'Back to Picker', 0x334155,
       () => this._goBackToPicker())
@@ -691,7 +892,7 @@ export class ShooterAnswerScene extends Phaser.Scene {
     const prog = this.qd.getProgress()
     this.onSessionEnd({
       score: this.score,
-      hearts: Math.max(this.hearts, 0),
+      hearts: Math.max(this.health, 0),
       time_seconds: this._effectiveTimeSeconds(),
       hintsUsed: this.hintsUsed,
       questions_answered: prog.answered,
@@ -742,8 +943,6 @@ export class ShooterAnswerScene extends Phaser.Scene {
       onResume: () => this._resume(),
       onQuit: () => this._quitToPicker(),
     })
-    // Phaser's input manager can be left disabled by tab-blur auto-pause;
-    // force-enable so overlay buttons respond when the user returns.
     this.input.enabled = true
     if (this.input.keyboard) this.input.keyboard.enabled = true
   }
@@ -774,7 +973,7 @@ export class ShooterAnswerScene extends Phaser.Scene {
     const prog = this.qd.getProgress()
     this.onSessionEnd({
       score: this.score,
-      hearts: Math.max(this.hearts, 0),
+      hearts: Math.max(this.health, 0),
       time_seconds: this._effectiveTimeSeconds(),
       hintsUsed: this.hintsUsed,
       questions_answered: prog.answered,
@@ -799,7 +998,6 @@ export class ShooterAnswerScene extends Phaser.Scene {
   }
 
   _beginReadingPause(ms = READING_PAUSE_MS) {
-    // Only pause once — before the very first wave of the session.
     if (this.autoPlay || this._didInitialCountdown) return
     this._didInitialCountdown = true
     this._readingPauseUntil = this.time.now + ms
@@ -810,7 +1008,7 @@ export class ShooterAnswerScene extends Phaser.Scene {
       'Ready…',
       {
         fontFamily: 'Inter, system-ui, sans-serif', fontSize: '14px',
-        color: '#0ea5e9', fontStyle: 'bold',
+        color: '#67e8f9', fontStyle: 'bold',
         backgroundColor: '#0f172a', padding: { x: 10, y: 4 },
       },
     ).setOrigin(1, 0).setDepth(250)

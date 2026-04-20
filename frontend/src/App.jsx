@@ -410,7 +410,12 @@ function PreviewRoute({ lessonId, gameId }) {
 
 function PlayRoute({ lessonId, gameId }) {
   const [, setLocation] = useLocation()
-  const studentName = getStudentName()
+  // Student flow is signalled explicitly by the share-link path (`?student=1`).
+  // Without this, a creator's stale localStorage.gp_student_name would hijack
+  // their own play session and tag the report as a student.
+  const isStudentFlow = typeof window !== 'undefined'
+    && new URLSearchParams(window.location.search).get('student') === '1'
+  const studentName = isStudentFlow ? getStudentName() : null
   function handleFinished(report, stats) {
     const qs = new URLSearchParams()
     if (stats) {
@@ -474,7 +479,7 @@ function StudentFlowRoute({ lessonId }) {
       lesson={lesson}
       studentName={studentName}
       onPicked={({ game_id }) =>
-        setLocation(`/play/${lessonId}/${game_id}`)
+        setLocation(`/play/${lessonId}/${game_id}?student=1`)
       }
     />
   )

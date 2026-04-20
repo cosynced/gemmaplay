@@ -20,6 +20,11 @@ import {
   loadGameState,
   saveGameState,
 } from '../utils/gameStatePersist.js'
+import {
+  OPTION_COLORS,
+  destroyAnswerGrid,
+  renderAnswerGrid,
+} from './AnswerGridHUD.js'
 import { snakeAutoPlay } from './AutoPlayAdapter.js'
 import { addHudPauseButton, createPauseOverlay } from './PauseOverlay.js'
 
@@ -27,12 +32,25 @@ const GAME_W = 960
 const GAME_H = 540
 const TILE = 30
 const COLS = 32
-const ROWS = 14
-const HUD_H = 60
-const QUESTION_H = 40
-const GRID_TOP = HUD_H + QUESTION_H         // y=100
+// Reduced from 14 to 11 to make vertical room for the shared answer grid.
+const ROWS = 11
+const HUD_H = 36
+const GRID_HUD_TOP = HUD_H + 6
+const GRID_HUD_OPTS = {
+  questionHeight: 36,
+  cellHeight: 34,
+  gap: 6,
+  padding: 12,
+  questionFontSize: 13,
+  optionFontSize: 12,
+  optionLines: 2,
+  chipSize: 24,
+  chipLetterSize: 13,
+}
+const GRID_HUD_HEIGHT = 36 + 10 + 2 * 34 + 6 // 120
+const GRID_TOP = GRID_HUD_TOP + GRID_HUD_HEIGHT + 6 // y=168
 const GRID_LEFT = 0
-const GRID_BOTTOM = GRID_TOP + ROWS * TILE  // y=520
+const GRID_BOTTOM = GRID_TOP + ROWS * TILE  // y=498
 const START_TICK_MS = 400
 const MIN_TICK_MS = 200
 const PER_CORRECT_TICK_DELTA = 5        // ms shaved per correct answer
@@ -48,10 +66,10 @@ const COLOR = {
   body: 0x38bdf8,
   tail: 0x0284c7,
   dimmed: 0x475569,
-  A: 0x0ea5e9,
-  B: 0xa855f7,
-  C: 0xfacc15,
-  D: 0x10b981,
+  A: OPTION_COLORS[0],
+  B: OPTION_COLORS[1],
+  C: OPTION_COLORS[2],
+  D: OPTION_COLORS[3],
   textHex: '#e2e8f0',
   heartsHex: '#ef4444',
 }
@@ -215,13 +233,7 @@ export class SnakeKnowledgeScene extends Phaser.Scene {
     this.lastTickAt = 0
 
     this.foods = []
-
-    // Tooltip that floats above the food closest to the head
-    this.tooltipLabel = this.add.text(0, 0, '', {
-      fontFamily: 'Inter, system-ui, sans-serif', fontSize: '12px',
-      color: '#0c1220', backgroundColor: '#facc15',
-      padding: { x: 6, y: 3 }, wordWrap: { width: 220 }, align: 'center',
-    }).setOrigin(0.5, 1).setDepth(300).setVisible(false)
+    this._gridHandles = null
 
     this._setupInput()
 
@@ -272,23 +284,17 @@ export class SnakeKnowledgeScene extends Phaser.Scene {
     this.hudBar = this.add.rectangle(GAME_W / 2, HUD_H / 2, GAME_W, HUD_H, COLOR.hud, 0.95)
       .setStrokeStyle(1, COLOR.stroke).setDepth(200)
     this.scoreText = this.add.text(16, HUD_H / 2, 'Score: 0', {
-      fontFamily: 'Inter, system-ui, sans-serif', fontSize: '18px', color: COLOR.textHex,
+      fontFamily: 'Inter, system-ui, sans-serif', fontSize: '14px', color: COLOR.textHex,
     }).setOrigin(0, 0.5).setDepth(201)
     this.questionCounterText = this.add.text(
-      160, HUD_H / 2, 'Question 1',
-      { fontFamily: 'Inter, system-ui, sans-serif', fontSize: '16px',
+      130, HUD_H / 2, 'Question 1',
+      { fontFamily: 'Inter, system-ui, sans-serif', fontSize: '14px',
         color: '#f1f5f9', fontStyle: 'bold' },
     ).setOrigin(0, 0.5).setDepth(201)
     this.heartsText = this.add.text(GAME_W - 16, HUD_H / 2, 'Length: 3', {
-      fontFamily: 'Inter, system-ui, sans-serif', fontSize: '16px', color: '#f1f5f9',
+      fontFamily: 'Inter, system-ui, sans-serif', fontSize: '14px', color: '#f1f5f9',
       fontStyle: 'bold',
     }).setOrigin(1, 0.5).setDepth(201)
-    this.qBar = this.add.rectangle(GAME_W / 2, HUD_H + QUESTION_H / 2, GAME_W, QUESTION_H, COLOR.hud, 0.85)
-      .setStrokeStyle(1, COLOR.stroke).setDepth(200)
-    this.questionText = this.add.text(GAME_W / 2, HUD_H + QUESTION_H / 2, '', {
-      fontFamily: 'Inter, system-ui, sans-serif', fontSize: '14px', color: COLOR.textHex,
-      wordWrap: { width: GAME_W - 40 }, align: 'center',
-    }).setOrigin(0.5).setDepth(201)
   }
 
   _renderHearts() {
@@ -354,11 +360,23 @@ export class SnakeKnowledgeScene extends Phaser.Scene {
       if (!q) return
     }
     this.activeQuestion = q
-    this.questionText.setText(q.q)
     if (this.questionCounterText) {
       const answered = this.qd ? this.qd.getProgress().answered : 0
       this.questionCounterText.setText(`Question ${answered + 1}`)
     }
+
+    destroyAnswerGrid(this._gridHandles)
+    this._gridHandles = renderAnswerGrid(this, {
+      x: 0,
+      y: GRID_HUD_TOP,
+      width: GAME_W,
+      question: q.q,
+      options: q.options || [],
+      correctIndex: q.answer_index,
+      depth: 195,
+      ...GRID_HUD_OPTS,
+    })
+
     this._clearFoods()
     this._spawnFoods()
     // Freeze the snake for 2s so the student can read the question and
@@ -455,7 +473,6 @@ export class SnakeKnowledgeScene extends Phaser.Scene {
       this.lastTickAt = time
     }
     if (time - this.lastTickAt < this.tickMs) {
-      this._updateTooltip()
       return
     }
     this.lastTickAt = time
@@ -491,31 +508,6 @@ export class SnakeKnowledgeScene extends Phaser.Scene {
       this.snake.pop()
     }
     this._renderSnake()
-    this._updateTooltip()
-  }
-
-  _updateTooltip() {
-    if (!this.snake.length || !this.foods.length || !this.activeQuestion) {
-      this.tooltipLabel.setVisible(false)
-      return
-    }
-    const head = this.snake[0]
-    let closest = null
-    let bestDist = Infinity
-    for (const f of this.foods) {
-      const dist = Math.abs(f.col - head.col) + Math.abs(f.row - head.row)
-      if (dist < bestDist) { bestDist = dist; closest = f }
-    }
-    if (!closest || bestDist > 3) {
-      this.tooltipLabel.setVisible(false)
-      return
-    }
-    const opt = this.activeQuestion.options[closest.letterIdx] ?? ''
-    this.tooltipLabel.setText(`${closest.letter}: ${opt}`)
-    const fx = cellX(closest.col)
-    let fy = cellY(closest.row) - TILE / 2 - 4
-    if (fy < GRID_TOP + 14) fy = cellY(closest.row) + TILE / 2 + 14
-    this.tooltipLabel.setPosition(fx, fy).setVisible(true)
   }
 
   // ---------- Resolution ----------
@@ -574,12 +566,12 @@ export class SnakeKnowledgeScene extends Phaser.Scene {
   }
 
   _banner(text, color, duration = 1500) {
-    const t = this.add.text(GAME_W / 2, HUD_H + QUESTION_H + 6, text, {
+    const t = this.add.text(GAME_W / 2, GRID_TOP - 6 + 6, text, {
       fontFamily: 'Inter, system-ui, sans-serif', fontSize: '16px', color,
       backgroundColor: '#0f172a', padding: { x: 12, y: 4 },
     }).setOrigin(0.5, 0).setDepth(202)
     this.tweens.add({
-      targets: t, alpha: 0, y: HUD_H + QUESTION_H - 4, duration, delay: 200,
+      targets: t, alpha: 0, y: GRID_TOP - 6 - 4, duration, delay: 200,
       onComplete: () => t.destroy(),
     })
   }
@@ -715,6 +707,10 @@ export class SnakeKnowledgeScene extends Phaser.Scene {
       onResume: () => this._resume(),
       onQuit: () => this._quitToPicker(),
     })
+    // Phaser's input manager can be left disabled by tab-blur auto-pause;
+    // force-enable so overlay buttons respond when the user returns.
+    this.input.enabled = true
+    if (this.input.keyboard) this.input.keyboard.enabled = true
   }
 
   _resume() {
@@ -773,7 +769,7 @@ export class SnakeKnowledgeScene extends Phaser.Scene {
     this._didInitialCountdown = true
     this._readingPauseUntil = this.time.now + ms
     this._hideReadyBadge()
-    const badge = this.add.text(GAME_W - 16, HUD_H + QUESTION_H + 8, 'Ready…', {
+    const badge = this.add.text(GAME_W - 16, GRID_TOP - 6 + 8, 'Ready…', {
       fontFamily: 'Inter, system-ui, sans-serif', fontSize: '14px',
       color: '#0ea5e9', fontStyle: 'bold',
       backgroundColor: '#0f172a', padding: { x: 10, y: 4 },

@@ -21,6 +21,11 @@ import {
   loadGameState,
   saveGameState,
 } from '../utils/gameStatePersist.js'
+import {
+  OPTION_COLORS,
+  destroyAnswerGrid,
+  renderAnswerGrid,
+} from './AnswerGridHUD.js'
 import { laneRunnerAutoPlay } from './AutoPlayAdapter.js'
 import { addHudPauseButton, createPauseOverlay } from './PauseOverlay.js'
 
@@ -31,8 +36,12 @@ const CX = GAME_W / 2
 
 const LANE_COUNT = 4
 const LETTERS = ['A', 'B', 'C', 'D']
-const GATE_COLORS = [0x0ea5e9, 0xa855f7, 0xf59e0b, 0x10b981]
-const GATE_COLORS_HEX = ['#0ea5e9', '#a855f7', '#f59e0b', '#10b981']
+const GATE_COLORS = [
+  OPTION_COLORS[0],
+  OPTION_COLORS[1],
+  OPTION_COLORS[2],
+  OPTION_COLORS[3],
+]
 
 // HUD layout (top)
 const PAUSE_SIZE = 44
@@ -46,27 +55,29 @@ const QUESTION_PANEL_W = 110
 const QUESTION_PANEL_H = SCORE_PANEL_H
 const QUESTION_PANEL_X = SCORE_PANEL_X - QUESTION_PANEL_W - 8
 const QUESTION_PANEL_Y = SCORE_PANEL_Y
-const Q_BANNER_TOP = 78
-const Q_BANNER_H = 66
-const Q_BANNER_PAD_X = 14
 
-// 2×2 answer grid (below the question banner)
-const GRID_TOP = Q_BANNER_TOP + Q_BANNER_H + 8       // 152
-const GRID_PAD_X = 14
-const GRID_GAP = 8
-const GRID_CELL_W = Math.floor((GAME_W - 2 * GRID_PAD_X - GRID_GAP) / 2)  // 252
-const GRID_CELL_H = 64
-const GRID_BOTTOM = GRID_TOP + GRID_CELL_H * 2 + GRID_GAP  // 288
+// Shared AnswerGridHUD sits at this y; sized to match the existing layout
+// so the road horizon (Y_HORIZON) stays put.
+const GRID_BANNER_TOP = 78
+const GRID_OPTS = {
+  questionHeight: 66,
+  cellHeight: 64,
+  gap: 8,
+  padding: 14,
+  questionFontSize: 15,
+  optionFontSize: 14,
+  chipSize: 36,
+  chipLetterSize: 20,
+}
 
 // Road geometry
-const Y_HORIZON = GRID_BOTTOM + 18            // 306
+const Y_HORIZON = 306
 const Y_BOTTOM = GAME_H                        // 900
 const ROAD_H = Y_BOTTOM - Y_HORIZON
 const STRIP_COUNT = 56
 const HALF_AT_HORIZON = 80
 const HALF_AT_BOTTOM = 320
 const RUNNER_Y = Math.floor(GAME_H * 0.85)    // 765
-const RUNNER_W_BASE = 56
 
 // Visual theme
 const COLOR_CANVAS_BG = 0x1b2430
@@ -84,8 +95,7 @@ const SCORE_WRONG = -1
 // No unanswered-streak ending: the only failure condition is score <= 0.
 const BASE_TRANSIT_S = 15.0       // gate horizon -> runner seconds
 const MIN_TRANSIT_S = 10.0        // floor after speed bumps
-const SPEED_BUMP_EVERY_N_Q = 15
-const SPEED_BUMP_FACTOR = 0.95    // 5% faster per tier
+const SPEED_BUMP_FACTOR = 0.96    // 4% faster per correct answer
 const HARD_Q_SLOWDOWN = 1.10      // 10% slower for hard questions
 const READING_PAUSE_MS = 2000
 const LANE_CHANGE_MS = 200
@@ -109,17 +119,6 @@ function laneCenterAtY(laneIdx, y) {
   const halfW = halfWidthAtY(y)
   const laneW = (halfW * 2) / LANE_COUNT
   return CX + (laneIdx - (LANE_COUNT - 1) / 2) * laneW
-}
-
-function gridCellRect(slotIdx) {
-  const col = slotIdx % 2
-  const row = Math.floor(slotIdx / 2)
-  return {
-    x: GRID_PAD_X + col * (GRID_CELL_W + GRID_GAP),
-    y: GRID_TOP + row * (GRID_CELL_H + GRID_GAP),
-    w: GRID_CELL_W,
-    h: GRID_CELL_H,
-  }
 }
 
 export class LaneRunnerScene extends Phaser.Scene {
@@ -147,6 +146,7 @@ export class LaneRunnerScene extends Phaser.Scene {
     this._readingActive = false
     this._countdownText = null
     this._didInitialCountdown = false
+    this._hintShown = false
 
     this.baseTransitS = BASE_TRANSIT_S
     this.transitSeconds = BASE_TRANSIT_S
@@ -158,6 +158,7 @@ export class LaneRunnerScene extends Phaser.Scene {
 
     this.activeGates = null     // { progress, question, visuals: [{lane, bg, label, color}], resolving, shuffleMap }
     this.pendingQuestion = null
+    this._committing = false
 
     this.qd = new QuestionDispatcher(this.lessonData)
 
@@ -247,35 +248,162 @@ export class LaneRunnerScene extends Phaser.Scene {
   }
 
   _buildRunner() {
-    // Stylized runner: rounded rect torso + lighter head circle + shadow.
-    const texW = RUNNER_W_BASE + 12
-    const texH = 80
-    const g = this.add.graphics()
-    // soft shadow at feet
-    g.fillStyle(0x000000, 0.35)
-    g.fillEllipse(texW / 2, texH - 6, RUNNER_W_BASE, 10)
-    // body
-    g.fillStyle(0x0ea5e9, 1)
-    g.fillRoundedRect(
-      texW / 2 - RUNNER_W_BASE / 2,
-      texH - 62,
-      RUNNER_W_BASE,
-      44,
-      8,
-    )
-    // head
-    g.fillStyle(0x38bdf8, 1)
-    g.fillCircle(texW / 2, texH - 66, 13)
-    // belt stripe
-    g.fillStyle(0xffffff, 0.5)
-    g.fillRect(texW / 2 - RUNNER_W_BASE / 2 + 6, texH - 34, RUNNER_W_BASE - 12, 4)
-    g.generateTexture('lr-runner', texW, texH)
-    g.destroy()
+    // Hand-drawn stick figure, procedural Phaser Graphics. Container origin
+    // sits at the feet so lane tweens on .x and the bob tween on .y compose
+    // cleanly. All children positioned in local coords with y going up (−).
+    const STROKE = 0x0f172a
+    const STROKE_W = 2.5
+    const SHADOW = 0x000000
 
-    this.runner = this.add
-      .image(this.runnerTargetX, RUNNER_Y, 'lr-runner')
-      .setOrigin(0.5, 1)
-      .setDepth(D_RUNNER)
+    const HIP_Y = -22
+    const SHOULDER_Y = -46
+    const NECK_TOP_Y = -50
+    const HEAD_CY = -62
+    const HEAD_R = 12
+    const ARM_LEN = 18
+    const LEG_LEN = 22
+    const SHOULDER_X = 7
+    const HIP_X = 5
+
+    const runner = this.add.container(this.runnerTargetX, RUNNER_Y).setDepth(D_RUNNER)
+
+    // Ground shadow — sits under the feet, does not animate.
+    const shadow = this.add.graphics()
+    shadow.fillStyle(SHADOW, 0.28)
+    shadow.fillEllipse(0, 2, 32, 8)
+
+    // Legs pivot at the hip: line drawn from local (0,0) downward so
+    // setRotation rotates around the hip attachment point.
+    const makeLeg = (hipX) => {
+      const g = this.add.graphics()
+      g.lineStyle(STROKE_W, STROKE, 1)
+      g.beginPath()
+      g.moveTo(0, 0)
+      g.lineTo(0, LEG_LEN)
+      g.strokePath()
+      g.fillStyle(STROKE, 1)
+      g.fillEllipse(1, LEG_LEN + 1, 8, 3)
+      g.setPosition(hipX, HIP_Y)
+      return g
+    }
+    const leftLeg = makeLeg(-HIP_X)
+    const rightLeg = makeLeg(HIP_X)
+
+    // Torso.
+    const body = this.add.graphics()
+    body.lineStyle(STROKE_W, STROKE, 1)
+    body.beginPath()
+    body.moveTo(0, HIP_Y)
+    body.lineTo(0, SHOULDER_Y)
+    body.strokePath()
+
+    // Neck.
+    const neck = this.add.graphics()
+    neck.lineStyle(STROKE_W, STROKE, 1)
+    neck.beginPath()
+    neck.moveTo(0, SHOULDER_Y)
+    neck.lineTo(0, NECK_TOP_Y)
+    neck.strokePath()
+
+    // Arms pivot at the shoulder, same construction as legs.
+    const makeArm = (shoulderX) => {
+      const g = this.add.graphics()
+      g.lineStyle(STROKE_W, STROKE, 1)
+      g.beginPath()
+      g.moveTo(0, 0)
+      g.lineTo(0, ARM_LEN)
+      g.strokePath()
+      g.fillStyle(STROKE, 1)
+      g.fillCircle(0, ARM_LEN, 3)
+      g.setPosition(shoulderX, SHOULDER_Y)
+      return g
+    }
+    const leftArm = makeArm(-SHOULDER_X)
+    const rightArm = makeArm(SHOULDER_X)
+
+    // Head: face + glasses + hair tuft.
+    const head = this.add.graphics()
+    head.lineStyle(STROKE_W, STROKE, 1)
+    head.strokeCircle(0, HEAD_CY, HEAD_R)
+
+    // Hair tuft: three short spiky strokes, off-center.
+    const tuftBaseY = HEAD_CY - HEAD_R + 1
+    const tufts = [
+      [-4, tuftBaseY - 2, -6, tuftBaseY - 9],
+      [0, tuftBaseY - 3, -1, tuftBaseY - 11],
+      [4, tuftBaseY - 2, 5, tuftBaseY - 8],
+    ]
+    head.lineStyle(2, STROKE, 1)
+    for (const [x1, y1, x2, y2] of tufts) {
+      head.beginPath()
+      head.moveTo(x1, y1)
+      head.lineTo(x2, y2)
+      head.strokePath()
+    }
+
+    // Glasses: two circles + bridge.
+    head.lineStyle(2, STROKE, 1)
+    head.strokeCircle(-4, HEAD_CY - 2, 4)
+    head.strokeCircle(4, HEAD_CY - 2, 4)
+    head.beginPath()
+    head.moveTo(-0.5, HEAD_CY - 2)
+    head.lineTo(0.5, HEAD_CY - 2)
+    head.strokePath()
+
+    // Eyes: small filled pupils inside the glasses, slight inward tilt.
+    head.fillStyle(STROKE, 1)
+    head.fillCircle(-3.5, HEAD_CY - 2, 1.4)
+    head.fillCircle(3.5, HEAD_CY - 2, 1.4)
+
+    // Smile: arc from 20° to 160° swept clockwise in y-down screen coords
+    // traces the bottom of a small circle — a friendly curve from the
+    // right corner through the chin dip to the left corner.
+    head.lineStyle(STROKE_W, STROKE, 1)
+    head.beginPath()
+    head.arc(
+      0,
+      HEAD_CY + 3,
+      5,
+      Phaser.Math.DegToRad(20),
+      Phaser.Math.DegToRad(160),
+      false,
+    )
+    head.strokePath()
+
+    runner.add([shadow, leftLeg, rightLeg, body, neck, leftArm, rightArm, head])
+
+    this.runner = runner
+    this.runner._parts = { leftArm, rightArm, leftLeg, rightLeg }
+
+    const ARM_SWING = Phaser.Math.DegToRad(35)
+    const LEG_SWING = Phaser.Math.DegToRad(25)
+    const DUR = 300
+
+    // Arms: left leads, right phase-offset by half a cycle.
+    this.tweens.add({
+      targets: leftArm, rotation: { from: -ARM_SWING, to: ARM_SWING },
+      duration: DUR, yoyo: true, repeat: -1, ease: 'Sine.easeInOut',
+    })
+    this.tweens.add({
+      targets: rightArm, rotation: { from: -ARM_SWING, to: ARM_SWING },
+      duration: DUR, yoyo: true, repeat: -1, ease: 'Sine.easeInOut',
+      delay: DUR / 2,
+    })
+    // Legs opposite the same-side arm so the gait reads naturally.
+    this.tweens.add({
+      targets: leftLeg, rotation: { from: -LEG_SWING, to: LEG_SWING },
+      duration: DUR, yoyo: true, repeat: -1, ease: 'Sine.easeInOut',
+      delay: DUR / 2,
+    })
+    this.tweens.add({
+      targets: rightLeg, rotation: { from: -LEG_SWING, to: LEG_SWING },
+      duration: DUR, yoyo: true, repeat: -1, ease: 'Sine.easeInOut',
+    })
+    // Body bob: container ±2px, twice per gait cycle.
+    this.tweens.add({
+      targets: runner, y: { from: RUNNER_Y - 1, to: RUNNER_Y + 1 },
+      duration: DUR, yoyo: true, repeat: -1, ease: 'Sine.easeInOut',
+    })
   }
 
   _buildHUD() {
@@ -307,72 +435,6 @@ export class LaneRunnerScene extends Phaser.Scene {
         color: COLOR_HUD_FG, fontStyle: 'bold' },
     ).setOrigin(0.5).setDepth(D_HUD_TEXT)
 
-    // Question banner
-    this.questionPanelBg = this.add.graphics().setDepth(D_HUD)
-    this._drawQuestionPanel()
-    this.questionText = this.add.text(
-      GAME_W / 2, Q_BANNER_TOP + Q_BANNER_H / 2, '',
-      {
-        fontFamily: 'Inter, system-ui, sans-serif', fontSize: '15px',
-        color: COLOR_HUD_FG, wordWrap: { width: GAME_W - 2 * Q_BANNER_PAD_X - 20 },
-        align: 'center', fontStyle: 'bold',
-      },
-    ).setOrigin(0.5).setDepth(D_HUD_TEXT)
-
-    this._buildAnswerGrid()
-  }
-
-  _buildAnswerGrid() {
-    this.gridCells = []
-    for (let i = 0; i < LANE_COUNT; i++) {
-      const { x, y, w, h } = gridCellRect(i)
-      const color = GATE_COLORS[i]
-
-      const bg = this.add.graphics().setDepth(D_HUD)
-      bg.fillStyle(0x0f172a, 0.94)
-      bg.fillRoundedRect(x, y, w, h, 10)
-      bg.lineStyle(2.5, color, 1)
-      bg.strokeRoundedRect(x, y, w, h, 10)
-
-      // Letter chip top-left
-      const chipSize = 36
-      const chip = this.add.graphics().setDepth(D_HUD + 1)
-      chip.fillStyle(color, 1)
-      chip.fillRoundedRect(x + 8, y + (h - chipSize) / 2, chipSize, chipSize, 8)
-      const letterText = this.add.text(
-        x + 8 + chipSize / 2, y + h / 2, LETTERS[i],
-        {
-          fontFamily: 'Inter, system-ui, sans-serif', fontSize: '20px',
-          color: '#0c1220', fontStyle: 'bold',
-        },
-      ).setOrigin(0.5).setDepth(D_HUD_TEXT)
-
-      const optText = this.add.text(
-        x + 8 + chipSize + 10, y + h / 2, '',
-        {
-          fontFamily: 'Inter, system-ui, sans-serif', fontSize: '14px',
-          color: '#f1f5f9',
-          wordWrap: { width: w - chipSize - 28 }, align: 'left',
-          maxLines: 2,
-        },
-      ).setOrigin(0, 0.5).setDepth(D_HUD_TEXT)
-
-      this.gridCells.push({ bg, chip, letterText, optText, color, rect: { x, y, w, h } })
-    }
-  }
-
-  _setGridOptions(laneToOptionIdx, q) {
-    if (!this.gridCells) return
-    for (let i = 0; i < LANE_COUNT; i++) {
-      const optIdx = laneToOptionIdx[i]
-      const opt = (q.options && q.options[optIdx] != null) ? String(q.options[optIdx]) : ''
-      this.gridCells[i].optText.setText(opt)
-    }
-  }
-
-  _clearGridOptions() {
-    if (!this.gridCells) return
-    for (const cell of this.gridCells) cell.optText.setText('')
   }
 
   _drawScorePanel() {
@@ -391,15 +453,6 @@ export class LaneRunnerScene extends Phaser.Scene {
     g.fillRoundedRect(QUESTION_PANEL_X, QUESTION_PANEL_Y, QUESTION_PANEL_W, QUESTION_PANEL_H, 10)
     g.lineStyle(2, 0x334155, 1)
     g.strokeRoundedRect(QUESTION_PANEL_X, QUESTION_PANEL_Y, QUESTION_PANEL_W, QUESTION_PANEL_H, 10)
-  }
-
-  _drawQuestionPanel() {
-    const g = this.questionPanelBg
-    g.clear()
-    g.fillStyle(0x0f172a, 0.92)
-    g.fillRoundedRect(Q_BANNER_PAD_X, Q_BANNER_TOP, GAME_W - 2 * Q_BANNER_PAD_X, Q_BANNER_H, 12)
-    g.lineStyle(2, 0x334155, 1)
-    g.strokeRoundedRect(Q_BANNER_PAD_X, Q_BANNER_TOP, GAME_W - 2 * Q_BANNER_PAD_X, Q_BANNER_H, 12)
   }
 
   _updateScoreText() {
@@ -422,6 +475,7 @@ export class LaneRunnerScene extends Phaser.Scene {
       const key = ev.key
       if (key === 'ArrowLeft' || key === 'a' || key === 'A') this._changeLane(this.currentLane - 1)
       else if (key === 'ArrowRight' || key === 'd' || key === 'D') this._changeLane(this.currentLane + 1)
+      else if (key === 'ArrowUp' || key === 'w' || key === 'W') this._commitToLane()
     })
 
     this._pointerStart = null
@@ -448,6 +502,8 @@ export class LaneRunnerScene extends Phaser.Scene {
 
       if (Math.abs(dx) < TAP_MAX_MOVE && Math.abs(dy) < TAP_MAX_MOVE && dt < TAP_MAX_TIME) {
         this._handleTap(p.x)
+      } else if (Math.abs(dy) > Math.abs(dx) && dy < -SWIPE_THRESHOLD) {
+        this._commitToLane()
       } else if (Math.abs(dx) > Math.abs(dy) && Math.abs(dx) > SWIPE_THRESHOLD) {
         this._changeLane(this.currentLane + (dx > 0 ? 1 : -1))
       }
@@ -494,8 +550,28 @@ export class LaneRunnerScene extends Phaser.Scene {
       if (!q) return
     }
     this.pendingQuestion = q
-    this.questionText.setText(q.q)
     this._updateQuestionCounter()
+
+    // Shuffle the letter→option mapping here (instead of in _spawnGateGroup)
+    // so the answer grid and the gate lineup agree.
+    const laneToOptionIdx = [0, 1, 2, 3]
+    for (let i = laneToOptionIdx.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1))
+      ;[laneToOptionIdx[i], laneToOptionIdx[j]] = [laneToOptionIdx[j], laneToOptionIdx[i]]
+    }
+    this.pendingLaneToOptionIdx = laneToOptionIdx
+
+    destroyAnswerGrid(this._gridHandles)
+    this._gridHandles = renderAnswerGrid(this, {
+      x: 0,
+      y: GRID_BANNER_TOP,
+      width: GAME_W,
+      question: q.q,
+      options: laneToOptionIdx.map((idx) => (q.options ? q.options[idx] : '')),
+      correctIndex: laneToOptionIdx.indexOf(q.answer_index),
+      depth: D_HUD,
+      ...GRID_OPTS,
+    })
 
     // Difficulty-tied slowdown: hard questions get 15% more time.
     const tier = this.qd.getDifficultyTier()
@@ -535,20 +611,85 @@ export class LaneRunnerScene extends Phaser.Scene {
       if (this._countdownText) { this._countdownText.destroy(); this._countdownText = null }
       this._readingActive = false
       if (!this.ended) onEnd && onEnd()
+      this._showCommitHint()
+    })
+  }
+
+  _showCommitHint() {
+    if (this._hintShown || this.autoPlay || this.ended) return
+    try {
+      if (typeof localStorage !== 'undefined'
+          && localStorage.getItem('gp_hint_laneRunner_commit') === 'true') {
+        this._hintShown = true
+        return
+      }
+    } catch { /* storage blocked — show hint anyway */ }
+
+    this._hintShown = true
+    try { localStorage.setItem('gp_hint_laneRunner_commit', 'true') } catch { /* ignore */ }
+
+    const cx = GAME_W / 2
+    const cy = Math.floor(GAME_H * 0.7)
+    const panelW = 380
+    const panelH = 56
+    const x0 = cx - panelW / 2
+    const y0 = cy - panelH / 2
+
+    const panel = this.add.graphics().setDepth(D_COUNTDOWN + 10)
+    panel.fillStyle(0x0f172a, 0.9)
+    panel.fillRoundedRect(x0, y0, panelW, panelH, 12)
+    panel.lineStyle(1.5, 0x38bdf8, 0.8)
+    panel.strokeRoundedRect(x0, y0, panelW, panelH, 12)
+
+    const arrow = this.add.graphics().setDepth(D_COUNTDOWN + 11)
+    arrow.fillStyle(0x38bdf8, 1)
+    const ax = x0 + 24
+    arrow.fillTriangle(ax, cy - 8, ax - 7, cy + 6, ax + 7, cy + 6)
+
+    const label = this.add.text(
+      cx + 10,
+      cy,
+      'Swipe up or press Up to commit faster',
+      {
+        fontFamily: 'Inter, system-ui, sans-serif',
+        fontSize: '15px',
+        color: '#f8fafc',
+        fontStyle: 'bold',
+      },
+    ).setOrigin(0.5).setDepth(D_COUNTDOWN + 11)
+
+    const elements = [panel, arrow, label]
+
+    // Subtle pulse: alpha 0.7 ↔ 1.0, repeated ~3 cycles inside the 4s window.
+    const pulse = this.tweens.add({
+      targets: elements,
+      alpha: { from: 1, to: 0.7 },
+      duration: 600,
+      yoyo: true,
+      repeat: 3,
+      ease: 'Sine.easeInOut',
+    })
+
+    this.time.delayedCall(4000, () => {
+      if (pulse && pulse.isPlaying()) pulse.stop()
+      this.tweens.add({
+        targets: elements,
+        alpha: 0,
+        duration: 350,
+        onComplete: () => {
+          for (const el of elements) {
+            try { el.destroy() } catch { /* already gone */ }
+          }
+        },
+      })
     })
   }
 
   _spawnGateGroup(q) {
     if (this.ended || !q) return
-    // Shuffle which option lands in which LETTER slot of the 2×2 grid.
-    // Lane i ALWAYS shows letter LETTERS[i]; the student has to read the
-    // grid to learn which letter holds the correct answer.
-    const laneToOptionIdx = [0, 1, 2, 3]
-    for (let i = laneToOptionIdx.length - 1; i > 0; i--) {
-      const j = Math.floor(Math.random() * (i + 1))
-      ;[laneToOptionIdx[i], laneToOptionIdx[j]] = [laneToOptionIdx[j], laneToOptionIdx[i]]
-    }
-    this._setGridOptions(laneToOptionIdx, q)
+    // Shuffle was done in _loadNextQuestion so the grid display matches
+    // the gate letters. Reuse the stored mapping.
+    const laneToOptionIdx = this.pendingLaneToOptionIdx || [0, 1, 2, 3]
 
     const group = {
       progress: 0,
@@ -630,11 +771,49 @@ export class LaneRunnerScene extends Phaser.Scene {
   _updateGates(dt) {
     if (!this.activeGates || this.activeGates.resolving) return
     if (this._readingActive) return
+    // While a commit rush-in tween is driving progress directly, skip the
+    // natural dt-based advance so the two don't compound.
+    if (this._committing) return
     this.activeGates.progress += dt / this.transitSeconds
     if (this.activeGates.progress >= 1) {
       this.activeGates.progress = 1
       this._resolveGates()
     }
+  }
+
+  _commitToLane() {
+    if (this.ended || this._isPaused) return
+    if (this._readingActive || this._committing) return
+    if (!this.activeGates || this.activeGates.resolving) return
+
+    this._committing = true
+    const group = this.activeGates
+
+    // Runner lunges forward: brief lean + tiny forward hop.
+    if (this.runner) {
+      this.tweens.add({
+        targets: this.runner,
+        angle: -10,
+        duration: 100,
+        yoyo: true,
+        ease: 'Sine.easeOut',
+      })
+    }
+
+    // Rush the approaching gate toward the runner over ~200ms. _updateGates
+    // is gated by _committing, so only this tween drives progress.
+    this.tweens.add({
+      targets: group,
+      progress: 1,
+      duration: 200,
+      ease: 'Sine.easeIn',
+      onComplete: () => {
+        this._committing = false
+        if (this.ended) return
+        if (this.activeGates !== group) return
+        this._resolveGates()
+      },
+    })
   }
 
   _renderGates() {
@@ -674,20 +853,17 @@ export class LaneRunnerScene extends Phaser.Scene {
 
     if (isCorrect) {
       this.score += SCORE_CORRECT
-    } else {
-      this.score = Math.max(0, this.score + SCORE_WRONG)
-    }
-    this._updateScoreText()
-
-    // Speed progression: every 10 questions, drop transit by 5% (cap MIN).
-    const answered = this.qd.getProgress().answered
-    if (answered > 0 && answered % SPEED_BUMP_EVERY_N_Q === 0) {
+      // Adaptive speed: each correct answer shortens transit by 4% (floor MIN).
+      // Wrong answers leave speed untouched.
       const nextBase = Math.max(MIN_TRANSIT_S, this.baseTransitS * SPEED_BUMP_FACTOR)
       if (nextBase < this.baseTransitS) {
         this.baseTransitS = nextBase
         this._banner('Speeding up!', '#10b981')
       }
+    } else {
+      this.score = Math.max(0, this.score + SCORE_WRONG)
     }
+    this._updateScoreText()
 
     // Freeze gates at their current visual positions. Flash correct/chosen.
     const finalTweens = []
@@ -754,12 +930,12 @@ export class LaneRunnerScene extends Phaser.Scene {
   }
 
   _banner(text, color, duration = 1200) {
-    const t = this.add.text(GAME_W / 2, Q_BANNER_TOP + Q_BANNER_H + 14, text, {
+    const t = this.add.text(GAME_W / 2, GRID_BANNER_TOP + GRID_OPTS.questionHeight + 14, text, {
       fontFamily: 'Inter, system-ui, sans-serif', fontSize: '22px', color,
       backgroundColor: '#0f172a', padding: { x: 16, y: 6 }, fontStyle: 'bold',
     }).setOrigin(0.5, 0).setDepth(D_COUNTDOWN)
     this.tweens.add({
-      targets: t, alpha: 0, y: Q_BANNER_TOP + Q_BANNER_H - 4, duration, delay: 150,
+      targets: t, alpha: 0, y: GRID_BANNER_TOP + GRID_OPTS.questionHeight - 4, duration, delay: 150,
       onComplete: () => t.destroy(),
     })
   }
@@ -903,6 +1079,10 @@ export class LaneRunnerScene extends Phaser.Scene {
       onResume: () => this._resume(),
       onQuit: () => this._quitToPicker(),
     })
+    // Phaser's input manager can be left disabled by tab-blur auto-pause;
+    // force-enable so overlay buttons respond when the user returns.
+    this.input.enabled = true
+    if (this.input.keyboard) this.input.keyboard.enabled = true
   }
 
   _resume() {

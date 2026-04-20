@@ -18,6 +18,12 @@ import {
   loadGameState,
   saveGameState,
 } from '../utils/gameStatePersist.js'
+import {
+  OPTION_COLORS,
+  OPTION_LETTERS,
+  destroyAnswerGrid,
+  renderAnswerGrid,
+} from './AnswerGridHUD.js'
 import { tetrisAutoPlay } from './AutoPlayAdapter.js'
 import { createPauseOverlay } from './PauseOverlay.js'
 
@@ -64,8 +70,7 @@ const BLOCK_SPAWN_Y = GRID_Y + BLOCK_SIZE / 2 + 8 // 108
 
 const START_DROP_MS = 800
 const MIN_DROP_MS = 400
-const DROP_MULT = 0.95             // 5% faster every N questions
-const SPEED_BUMP_EVERY_N_Q = 10
+const DROP_MULT = 0.96             // 4% faster per correct answer
 const FAST_DROP_MS = 300
 const READING_PAUSE_MS = 2000
 const SCORE_CORRECT = 10
@@ -91,8 +96,21 @@ const COLOR = {
   binText: '#0c1220',
 }
 
-// One bin per column, each with a brand-accent border colour.
-const BIN_COLORS = [0x0ea5e9, 0xa855f7, 0xfacc15, 0x10b981]
+// Bin border colour comes from OPTION_COLORS via the letter the bin
+// currently holds — set dynamically per wave, not by column index.
+
+// Layout for the shared AnswerGridHUD in the right column.
+const GRID_HUD_OPTS = {
+  questionHeight: 44,
+  cellHeight: 40,
+  gap: 6,
+  padding: 10,
+  questionFontSize: 13,
+  optionFontSize: 12,
+  optionLines: 2,
+  chipSize: 26,
+  chipLetterSize: 14,
+}
 
 // Wrong-stack colour rotation — red / amber / violet / pink, cycling by
 // stack depth. Matches the reference's rainbow tower.
@@ -241,7 +259,6 @@ export class TetrisAnswerScene extends Phaser.Scene {
 
     this._drawPlayfield()
     this._drawDecorativeGrid()
-    this._drawQuestionStrip()
     this._buildHud()
 
     // Mechanic state
@@ -304,21 +321,6 @@ export class TetrisAnswerScene extends Phaser.Scene {
     }
   }
 
-  _drawQuestionStrip() {
-    const bar = this.add.rectangle(PLAYFIELD_W / 2, QUESTION_STRIP_H / 2, PLAYFIELD_W, QUESTION_STRIP_H, COLOR.questionBg, 1)
-      .setStrokeStyle(1, 0x9ca3af)
-      .setDepth(5)
-    this.questionText = this.add.text(PLAYFIELD_W / 2, QUESTION_STRIP_H / 2, '', {
-      fontFamily: 'Inter, system-ui, sans-serif',
-      fontSize: '16px',
-      color: COLOR.questionText,
-      fontStyle: 'bold',
-      wordWrap: { width: PLAYFIELD_W - 40 },
-      align: 'center',
-      maxLines: 2,
-    }).setOrigin(0.5).setDepth(6)
-  }
-
   // ---------- Right-side HUD column ----------
 
   _buildHud() {
@@ -328,26 +330,34 @@ export class TetrisAnswerScene extends Phaser.Scene {
       .fillStyle(0xbac0c9, 1)
       .fillRect(PLAYFIELD_W, 0, 20, GAME_H)
 
+    // Shared AnswerGridHUD sits at the top of the HUD column; the question
+    // banner + 2x2 grid come from renderAnswerGrid and are re-rendered on
+    // each question advance. Track the handles so we can destroy them.
+    this._gridHandles = null
+    this.gridArea = {
+      x: HUD_X + 10,
+      y: 10,
+      width: HUD_W - 20,
+    }
+
     const panelX = HUD_X + 20
     const panelW = HUD_W - 40
-    const topPad = 20
-    const gap = 10
-    const statH = 80
-    // 4 stat panels stacked, PAUSE fills the rest.
-    const statY = (i) => topPad + i * (statH + gap)
-    const pauseY = topPad + 4 * (statH + gap) // y top
-    const pauseH = GAME_H - pauseY - topPad   // stretches to bottom
+    const statTop = 240
+    const statH = 54
+    const gap = 8
 
-    this._drawHudPanel('NEXT', panelX, statY(0), panelW, statH)
-    this._drawNextPreview(panelX + panelW / 2, statY(0) + 10, panelW, statH)
-    const scorePanel = this._drawHudPanel('SCORE', panelX, statY(1), panelW, statH)
+    const statY = (i) => statTop + i * (statH + gap)
+    const pauseTop = statTop + 3 * (statH + gap) + 10
+    const pauseH = GAME_H - pauseTop - 20
+
+    const scorePanel = this._drawHudPanel('SCORE', panelX, statY(0), panelW, statH)
     this.hud.scoreVal = this._drawHudValue(scorePanel, '0')
-    const correctPanel = this._drawHudPanel('CORRECT', panelX, statY(2), panelW, statH)
+    const correctPanel = this._drawHudPanel('CORRECT', panelX, statY(1), panelW, statH)
     this.hud.correctVal = this._drawHudValue(correctPanel, '0')
-    const questionPanel = this._drawHudPanel('QUESTION', panelX, statY(3), panelW, statH)
+    const questionPanel = this._drawHudPanel('QUESTION', panelX, statY(2), panelW, statH)
     this.hud.questionVal = this._drawHudValue(questionPanel, '1')
 
-    this._drawPauseButton(panelX, pauseY, panelW, pauseH)
+    this._drawPauseButton(panelX, pauseTop, panelW, pauseH)
   }
 
   _drawHudPanel(label, x, y, w, h) {
@@ -366,23 +376,13 @@ export class TetrisAnswerScene extends Phaser.Scene {
   }
 
   _drawHudValue(panel, initial) {
-    const t = this.add.text(panel.x + panel.w / 2, panel.y + panel.h - 14, initial, {
+    const t = this.add.text(panel.x + panel.w / 2, panel.y + panel.h - 8, initial, {
       fontFamily: 'Inter, system-ui, sans-serif',
-      fontSize: '30px',
+      fontSize: '22px',
       color: COLOR.hudText,
       fontStyle: 'bold',
     }).setOrigin(0.5, 1).setDepth(11)
     return t
-  }
-
-  _drawNextPreview(cx, panelTopY, panelW, panelH) {
-    // The preview shows a static plain blue block since every falling
-    // block looks the same. Still useful as a "what's coming" anchor.
-    const previewSize = 40
-    const block = makeBlock(this, cx, panelTopY + panelH / 2 + 10, COLOR.fallingBlock, 1)
-    block.setDepth(11)
-    block.setScale(previewSize / BLOCK_SIZE)
-    this._nextPreview = block
   }
 
   _drawPauseButton(x, y, w, h) {
@@ -505,7 +505,7 @@ export class TetrisAnswerScene extends Phaser.Scene {
     this._advanceQuestion({ refreshBins: true })
   }
 
-  _advanceQuestion({ refreshBins }) {
+  _advanceQuestion({ refreshBins: _refreshBins }) {
     let q = this.qd.current()
     if (!q) {
       // Dispatcher auto-reshuffles; this is only a belt-and-braces loop.
@@ -515,25 +515,31 @@ export class TetrisAnswerScene extends Phaser.Scene {
       if (!q) return
     }
     this.currentQuestion = q
-    this.questionText.setText(q.q)
     this._updateHudLevel()
 
+    // Shuffle: order[col] = optionIdx. Column c displays letter
+    // OPTION_LETTERS[order[c]] in OPTION_COLORS[order[c]].
     const order = [0, 1, 2, 3]
     Phaser.Utils.Array.Shuffle(order)
-    const shuffledOptions = order.map((i) => q.options[i] ?? '')
     const correctCol = order.indexOf(q.answer_index)
 
-    if (refreshBins || !this.bins) {
-      this._disposeBins(false)
-      this._buildBins(shuffledOptions, correctCol)
-    } else {
-      for (let i = 0; i < COL_COUNT; i++) {
-        this.bins.labels[i].setText(shuffledOptions[i])
-      }
-      this.bins.correctCol = correctCol
-      this.bins.colToOptionIdx = order.slice()
-    }
-    this.bins.colToOptionIdx = order.slice()
+    // Re-render the shared answer grid (question banner + 2x2 grid).
+    // Options are passed in LETTER order so the grid reads A=options[0]…D.
+    destroyAnswerGrid(this._gridHandles)
+    this._gridHandles = renderAnswerGrid(this, {
+      x: this.gridArea.x,
+      y: this.gridArea.y,
+      width: this.gridArea.width,
+      question: q.q,
+      options: q.options || [],
+      correctIndex: q.answer_index,
+      depth: 15,
+      ...GRID_HUD_OPTS,
+    })
+
+    // Bins are rebuilt per question — letter + border color tracks the shuffle.
+    this._disposeBins(false)
+    this._buildBins(order, correctCol)
 
     if (this.hintPendingForNextQuestion) {
       this._dimTwoWrongBins()
@@ -549,11 +555,15 @@ export class TetrisAnswerScene extends Phaser.Scene {
 
   // ---------- Bins ----------
 
-  _buildBins(options, correctCol) {
+  _buildBins(order, correctCol) {
     const sprites = []
     const labels = []
     const borders = []
+    const baseColors = []
     for (let i = 0; i < COL_COUNT; i++) {
+      const optIdx = order[i]
+      const color = OPTION_COLORS[optIdx]
+      const letter = OPTION_LETTERS[optIdx]
       const x = colCenterX(i)
       const y = BIN_TOP + BIN_H / 2
       const w = COL_W - 8
@@ -562,24 +572,23 @@ export class TetrisAnswerScene extends Phaser.Scene {
       bg.fillStyle(0xffffff, 1)
       bg.fillRoundedRect(x - w / 2, y - h / 2, w, h, 10)
       const border = this.add.graphics().setDepth(21)
-      border.lineStyle(4, BIN_COLORS[i], 1)
+      border.lineStyle(4, color, 1)
       border.strokeRoundedRect(x - w / 2 + 2, y - h / 2 + 2, w - 4, h - 4, 8)
-      const label = this.add.text(x, y, options[i] || '', {
+      const label = this.add.text(x, y, letter, {
         fontFamily: 'Inter, system-ui, sans-serif',
-        fontSize: '16px',
+        fontSize: '40px',
         color: COLOR.binText,
         fontStyle: 'bold',
-        wordWrap: { width: w - 18 },
-        align: 'center',
-        maxLines: 3,
       }).setOrigin(0.5).setDepth(22)
       sprites.push(bg)
       borders.push(border)
       labels.push(label)
+      baseColors.push(color)
     }
     this.bins = {
-      sprites, borders, labels, correctCol, baseColors: [...BIN_COLORS],
-      colToOptionIdx: [0, 1, 2, 3],
+      sprites, borders, labels, correctCol, baseColors,
+      order: order.slice(),
+      colToOptionIdx: order.slice(),
     }
   }
 
@@ -689,8 +698,6 @@ export class TetrisAnswerScene extends Phaser.Scene {
       redrawBlock(block.container, STACK_COLORS[colorIdx], 0.8)
       this.stacks[col].push(block.container)
 
-      this._maybeSpeedBump()
-
       if (this._stackReachedTop()) {
         this._banner('Tower reached the top.', '#ef4444')
         return this._endSession()
@@ -703,13 +710,12 @@ export class TetrisAnswerScene extends Phaser.Scene {
   }
 
   _maybeSpeedBump() {
-    const answered = this.qd.getProgress().answered
-    if (answered > 0 && answered % SPEED_BUMP_EVERY_N_Q === 0) {
-      const next = Math.max(MIN_DROP_MS, Math.floor(this.dropMs * DROP_MULT))
-      if (next < this.dropMs) {
-        this.dropMs = next
-        this._banner('Speeding up!', '#10b981')
-      }
+    // Adaptive speed: each correct answer shaves 4% off the drop interval
+    // (floor MIN_DROP_MS). Wrong answers do not touch the interval.
+    const next = Math.max(MIN_DROP_MS, Math.floor(this.dropMs * DROP_MULT))
+    if (next < this.dropMs) {
+      this.dropMs = next
+      this._banner('Speeding up!', '#10b981')
     }
   }
 
@@ -939,6 +945,10 @@ export class TetrisAnswerScene extends Phaser.Scene {
       onResume: () => this._resume(),
       onQuit: () => this._quitToPicker(),
     })
+    // Phaser's input manager can be left disabled by tab-blur auto-pause;
+    // force-enable so overlay buttons respond when the user returns.
+    this.input.enabled = true
+    if (this.input.keyboard) this.input.keyboard.enabled = true
   }
 
   _resume() {

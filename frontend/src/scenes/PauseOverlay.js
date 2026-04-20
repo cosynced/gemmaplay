@@ -53,6 +53,7 @@ function makeOverlayButton(scene, { x, y, label, fillColor, onClick }) {
 export function createPauseOverlay(scene) {
   let visible = false
   let elements = []
+  let buttons = []
   let enterHandler = null
 
   function show({ onResume, onQuit }) {
@@ -62,8 +63,12 @@ export function createPauseOverlay(scene) {
     const width = gs.width
     const height = gs.height
 
-    // Instant appearance (setAlpha directly). Fade tweens used to race
-    // against gameplay tween pausing and could leave the overlay invisible.
+    // When the overlay is shown from a visibilitychange auto-pause, Phaser's
+    // input plugin can be left disabled by the blur/focus cycle. Re-assert
+    // it before building interactive buttons so clicks land on the overlay.
+    if (scene.input) scene.input.enabled = true
+    if (scene.input?.keyboard) scene.input.keyboard.enabled = true
+
     const panel = scene.add
       .rectangle(width / 2, height / 2, width, height, 0x0c1220, PAUSE_PANEL_ALPHA)
       .setDepth(PAUSE_DEPTH)
@@ -80,7 +85,10 @@ export function createPauseOverlay(scene) {
       y: height / 2 + 10,
       label: 'Resume',
       fillColor: 0x0ea5e9,
-      onClick: () => onResume(),
+      onClick: () => {
+        console.log('[PauseOverlay] Resume clicked')
+        onResume()
+      },
     })
     resumeBtn.setDepth(PAUSE_DEPTH + 1)
 
@@ -89,10 +97,14 @@ export function createPauseOverlay(scene) {
       y: height / 2 + 70,
       label: 'Quit to picker',
       fillColor: 0x334155,
-      onClick: () => onQuit(),
+      onClick: () => {
+        console.log('[PauseOverlay] Quit clicked')
+        onQuit()
+      },
     })
     quitBtn.setDepth(PAUSE_DEPTH + 1)
 
+    buttons = [resumeBtn, quitBtn]
     elements = [panel, title, resumeBtn, quitBtn]
 
     enterHandler = () => onResume()
@@ -106,6 +118,10 @@ export function createPauseOverlay(scene) {
       scene.input.keyboard?.off('keydown-ENTER', enterHandler)
       enterHandler = null
     }
+    for (const btn of buttons) {
+      try { btn.disableInteractive() } catch { /* already gone */ }
+    }
+    buttons = []
     const toDestroy = elements
     elements = []
     for (const el of toDestroy) {

@@ -16,8 +16,8 @@ const PREVIEWS = {
       "Correct: +2 points. Wrong: -1. You start at 20. Hit 0 and it's over.",
     ],
     controls: [
-      'Keyboard: Left / Right arrow keys or A / D',
-      'Touch: Swipe left / right, or tap the left / right side of the screen',
+      'Keyboard: Left / Right arrows or A / D. Up arrow or W to commit.',
+      'Touch: Swipe left / right, or tap the left / right side of the screen. Swipe up to commit your answer.',
     ],
   },
   tetris_answer: {

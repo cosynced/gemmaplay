@@ -20,14 +20,34 @@ import {
   loadGameState,
   saveGameState,
 } from '../utils/gameStatePersist.js'
+import {
+  OPTION_COLORS,
+  destroyAnswerGrid,
+  renderAnswerGrid,
+} from './AnswerGridHUD.js'
 import { shooterAutoPlay } from './AutoPlayAdapter.js'
 import { addHudPauseButton, createPauseOverlay } from './PauseOverlay.js'
 
 const GAME_W = 960
 const GAME_H = 540
-const QUESTION_STRIP_H = 80
+// Top reserved space is split: shared AnswerGridHUD at the top, then the
+// thin HUD strip (score / hearts / question counter) beneath it.
+const GRID_HUD_TOP = 8
+const GRID_HUD_OPTS = {
+  questionHeight: 34,
+  cellHeight: 38,
+  gap: 6,
+  padding: 14,
+  questionFontSize: 13,
+  optionFontSize: 12,
+  optionLines: 2,
+  chipSize: 26,
+  chipLetterSize: 14,
+}
+const GRID_HUD_BOTTOM = 8 + 34 + 10 + 2 * 38 + 6 // 134
 const HUD_STRIP_H = 30
-const PLAY_TOP = 130
+const HUD_STRIP_TOP = GRID_HUD_BOTTOM + 6       // 140
+const PLAY_TOP = HUD_STRIP_TOP + HUD_STRIP_H + 5 // 175
 const PLAY_BOTTOM = 480
 const COL_XS = [120, 360, 600, 840]
 const LETTER_BOX = 60
@@ -36,14 +56,15 @@ const SHIP_SIZE = 40
 const SHIP_SPEED = 400
 const BULLET_SPEED = 500
 const LETTER_FALL = 10                       // starting descent speed
-const LETTER_FALL_CAP = LETTER_FALL * 2.0    // 200% max
+// Descent-time floor = 70% of starting. Max speed = LETTER_FALL / 0.7.
+const LETTER_FALL_CAP = LETTER_FALL / 0.7
 const FIRE_INTERVAL = 220
 const WAVE_GAP_MS = 5000                      // breathing room between waves
 const READING_PAUSE_MS = 2000
 const START_HEARTS = 5
 const SCORE_CORRECT = 5
-const SPEED_BUMP_EVERY_N_Q = 10
-const SPEED_BUMP_FACTOR = 1.05                // 5% faster descent every tier
+// Each correct answer shortens descent TIME by 4% → speed factor = 1/0.96.
+const SPEED_BUMP_FACTOR = 1 / 0.96
 
 const COLOR = {
   bg: 0x0c1220,
@@ -52,16 +73,15 @@ const COLOR = {
   ship: 0x0ea5e9,
   bullet: 0xfacc15,
   dimmed: 0x475569,
-  A: 0x0ea5e9,
-  B: 0xa855f7,
-  C: 0xfacc15,
-  D: 0x10b981,
+  A: OPTION_COLORS[0],
+  B: OPTION_COLORS[1],
+  C: OPTION_COLORS[2],
+  D: OPTION_COLORS[3],
   heartsHex: '#ef4444',
   textHex: '#e2e8f0',
 }
 
 const LETTER_KEYS = ['A', 'B', 'C', 'D']
-const LETTER_HEX = ['#0ea5e9', '#a855f7', '#facc15', '#10b981']
 
 export class ShooterAnswerScene extends Phaser.Scene {
   constructor() {
@@ -283,34 +303,26 @@ export class ShooterAnswerScene extends Phaser.Scene {
   }
 
   _buildHUD() {
-    // Question strip (top)
-    this.qBar = this.add.rectangle(GAME_W / 2, QUESTION_STRIP_H / 2, GAME_W, QUESTION_STRIP_H, COLOR.hud, 0.95)
-      .setStrokeStyle(1, COLOR.stroke).setDepth(200)
-    this.questionText = this.add.text(GAME_W / 2, QUESTION_STRIP_H / 2, '', {
-      fontFamily: 'Inter, system-ui, sans-serif', fontSize: '16px', color: COLOR.textHex,
-      wordWrap: { width: GAME_W - 40 }, align: 'center',
-    }).setOrigin(0.5).setDepth(201)
-
-    // HUD strip (below question strip)
+    // HUD strip (below the shared answer grid) — score, question counter,
+    // hearts. The question banner + 2x2 grid above come from AnswerGridHUD.
     this.hudBar = this.add.rectangle(
-      GAME_W / 2, QUESTION_STRIP_H + HUD_STRIP_H / 2, GAME_W, HUD_STRIP_H, COLOR.hud, 0.85,
+      GAME_W / 2, HUD_STRIP_TOP + HUD_STRIP_H / 2, GAME_W, HUD_STRIP_H, COLOR.hud, 0.85,
     ).setStrokeStyle(1, COLOR.stroke).setDepth(200)
 
-    this.scoreText = this.add.text(16, QUESTION_STRIP_H + HUD_STRIP_H / 2, 'Score: 0', {
+    this.scoreText = this.add.text(16, HUD_STRIP_TOP + HUD_STRIP_H / 2, 'Score: 0', {
       fontFamily: 'Inter, system-ui, sans-serif', fontSize: '14px', color: COLOR.textHex,
     }).setOrigin(0, 0.5).setDepth(201)
 
     this.questionCounterText = this.add.text(
-      130, QUESTION_STRIP_H + HUD_STRIP_H / 2, 'Question 1',
+      130, HUD_STRIP_TOP + HUD_STRIP_H / 2, 'Question 1',
       { fontFamily: 'Inter, system-ui, sans-serif', fontSize: '14px',
         color: COLOR.textHex, fontStyle: 'bold' },
     ).setOrigin(0, 0.5).setDepth(201)
 
-    this.heartsText = this.add.text(GAME_W - 60, QUESTION_STRIP_H + HUD_STRIP_H / 2,
+    this.heartsText = this.add.text(GAME_W - 60, HUD_STRIP_TOP + HUD_STRIP_H / 2,
       Array(START_HEARTS).fill('\u2665').join(' '), {
       fontFamily: 'Inter, system-ui, sans-serif', fontSize: '18px', color: COLOR.heartsHex,
     }).setOrigin(1, 0.5).setDepth(201)
-
   }
 
   _renderHearts() {
@@ -338,11 +350,22 @@ export class ShooterAnswerScene extends Phaser.Scene {
     }
     if (!q) { this.activeQuestion = null; return }
     this.activeQuestion = q
-    this.questionText.setText(q.q)
     if (this.questionCounterText) {
       const answered = this.qd ? this.qd.getProgress().answered : 0
       this.questionCounterText.setText(`Question ${answered + 1}`)
     }
+
+    destroyAnswerGrid(this._gridHandles)
+    this._gridHandles = renderAnswerGrid(this, {
+      x: 0,
+      y: GRID_HUD_TOP,
+      width: GAME_W,
+      question: q.q,
+      options: q.options || [],
+      correctIndex: q.answer_index,
+      depth: 195,
+      ...GRID_HUD_OPTS,
+    })
   }
 
   _clearLetters() {
@@ -386,22 +409,15 @@ export class ShooterAnswerScene extends Phaser.Scene {
     const letter = LETTER_KEYS[letterIdx]
     const sprite = this.add.image(x, y, `sa-letter-${letter}`).setDepth(10)
     const letterLabel = this.add.text(x, y, letter, {
-      fontFamily: 'Inter, system-ui, sans-serif', fontSize: '30px',
+      fontFamily: 'Inter, system-ui, sans-serif', fontSize: '36px',
       color: '#0c1220', fontStyle: 'bold',
     }).setOrigin(0.5).setDepth(11)
-    const opt = (this.activeQuestion && this.activeQuestion.options[letterIdx]) || ''
-    const optLabel = this.add.text(x, y + LETTER_BOX / 2 + 10, opt, {
-      fontFamily: 'Inter, system-ui, sans-serif', fontSize: '12px',
-      color: LETTER_HEX[letterIdx],
-      wordWrap: { width: 150 }, align: 'center',
-    }).setOrigin(0.5, 0).setDepth(11)
-    this.letters.push({ sprite, letterLabel, optLabel, letterIdx, col, y })
+    this.letters.push({ sprite, letterLabel, letterIdx, col, y })
   }
 
   _destroyLetter(L) {
     L.sprite.destroy()
     L.letterLabel.destroy()
-    L.optLabel.destroy()
   }
 
   // ---------- Game loop ----------
@@ -456,7 +472,6 @@ export class ShooterAnswerScene extends Phaser.Scene {
       }
       L.sprite.y = L.y
       L.letterLabel.y = L.y
-      L.optLabel.y = L.y + LETTER_BOX / 2 + 10
       lSurvivors.push(L)
     }
     this.letters = lSurvivors
@@ -515,7 +530,7 @@ export class ShooterAnswerScene extends Phaser.Scene {
       this._explodeLetter(L)
       for (const other of this.letters) {
         this.tweens.add({
-          targets: [other.sprite, other.letterLabel, other.optLabel],
+          targets: [other.sprite, other.letterLabel],
           alpha: 0, duration: 250,
           onComplete: () => this._destroyLetter(other),
         })
@@ -551,13 +566,12 @@ export class ShooterAnswerScene extends Phaser.Scene {
   }
 
   _maybeSpeedBump() {
-    const answered = this.qd.getProgress().answered
-    if (answered > 0 && answered % SPEED_BUMP_EVERY_N_Q === 0) {
-      const next = Math.min(LETTER_FALL_CAP, this.descentSpeed * SPEED_BUMP_FACTOR)
-      if (next > this.descentSpeed) {
-        this.descentSpeed = next
-        this._banner('Descent +5%', '#f59e0b')
-      }
+    // Adaptive speed: each correct answer shortens descent time by 4%
+    // (cap at 70% of starting time). Called only from the correct branch.
+    const next = Math.min(LETTER_FALL_CAP, this.descentSpeed * SPEED_BUMP_FACTOR)
+    if (next > this.descentSpeed) {
+      this.descentSpeed = next
+      this._banner('Speeding up!', '#10b981')
     }
   }
 
@@ -587,13 +601,13 @@ export class ShooterAnswerScene extends Phaser.Scene {
 
   _banner(text, color, duration = 1500) {
     const t = this.add.text(
-      GAME_W / 2, QUESTION_STRIP_H + HUD_STRIP_H + 8, text, {
+      GAME_W / 2, HUD_STRIP_TOP + HUD_STRIP_H + 8, text, {
         fontFamily: 'Inter, system-ui, sans-serif', fontSize: '15px', color,
         backgroundColor: '#0f172a', padding: { x: 12, y: 4 },
       },
     ).setOrigin(0.5, 0).setDepth(202)
     this.tweens.add({
-      targets: t, alpha: 0, y: QUESTION_STRIP_H + HUD_STRIP_H - 4, duration, delay: 200,
+      targets: t, alpha: 0, y: HUD_STRIP_TOP + HUD_STRIP_H - 4, duration, delay: 200,
       onComplete: () => t.destroy(),
     })
   }
@@ -693,7 +707,7 @@ export class ShooterAnswerScene extends Phaser.Scene {
     this._pauseOverlay = createPauseOverlay(this)
     this._pauseButton = addHudPauseButton(this, {
       x: GAME_W - 28,
-      y: QUESTION_STRIP_H + HUD_STRIP_H / 2,
+      y: HUD_STRIP_TOP + HUD_STRIP_H / 2,
       onClick: () => this._togglePause(),
       depth: 210,
     })
@@ -728,6 +742,10 @@ export class ShooterAnswerScene extends Phaser.Scene {
       onResume: () => this._resume(),
       onQuit: () => this._quitToPicker(),
     })
+    // Phaser's input manager can be left disabled by tab-blur auto-pause;
+    // force-enable so overlay buttons respond when the user returns.
+    this.input.enabled = true
+    if (this.input.keyboard) this.input.keyboard.enabled = true
   }
 
   _resume() {
@@ -788,7 +806,7 @@ export class ShooterAnswerScene extends Phaser.Scene {
     this._hideReadyBadge()
     const badge = this.add.text(
       GAME_W - 16,
-      QUESTION_STRIP_H + HUD_STRIP_H + 8,
+      HUD_STRIP_TOP + HUD_STRIP_H + 8,
       'Ready…',
       {
         fontFamily: 'Inter, system-ui, sans-serif', fontSize: '14px',

@@ -76,6 +76,7 @@ export class BootScene extends Phaser.Scene {
       lane_runner: 'LaneRunnerScene',
       tetris_answer: 'TetrisAnswerScene',
       shooter_answer: 'ShooterAnswerScene',
+      snake_knowledge: 'SnakeKnowledgeScene',
       quiz_runner: 'GameScene',
     }[gameType] || 'LaneRunnerScene'
     this.scene.start(sceneKey, data)

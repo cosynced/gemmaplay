@@ -8,9 +8,11 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
-# System deps for pdfplumber (needs ghostscript for some PDFs but not strictly required)
+# System deps:
+#   gcc          — for any source-built Python wheels
+#   poppler-utils — required by pdf2image for scanned-PDF rasterization
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    gcc \
+    gcc poppler-utils \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt .

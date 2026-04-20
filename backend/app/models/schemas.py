@@ -25,7 +25,7 @@ class Concept(BaseModel):
     id: str = Field(default_factory=lambda: f"c_{uuid4().hex[:8]}")
     name: str
     summary: str
-    questions: list[Question] = Field(min_length=1, max_length=5)
+    questions: list[Question] = Field(min_length=1, max_length=20)
 
 
 class Lesson(BaseModel):
@@ -35,6 +35,11 @@ class Lesson(BaseModel):
     grade_level: str = "Unknown"
     source_text_hash: str = ""
     concepts: list[Concept] = Field(min_length=3, max_length=5)
+    # Markdown-formatted reference notes shown alongside gameplay. One `##`
+    # section per concept, 2-4 sentences each, never hinting at answers.
+    # Optional so legacy rows (generated before this field existed) still
+    # load; callers fall back to concatenating `concept.summary` when absent.
+    concept_notes: str | None = None
 
 
 # ---------- Game Agent output ----------
@@ -48,7 +53,10 @@ class Level(BaseModel):
     questions: list[str]  # question ids
 
 
-GameTypeId = Literal["lane_runner", "tetris_answer", "shooter_answer", "quiz_runner"]
+GameTypeId = Literal[
+    "lane_runner", "tetris_answer", "shooter_answer", "snake_knowledge",
+    "quiz_runner",
+]
 
 
 class Game(BaseModel):
@@ -79,6 +87,16 @@ GAME_TYPES: list[dict] = [
         "name": "Answer Blaster",
         "description": "Space Invaders-style. Shoot the correct falling answer.",
         "best_for": "Fast recall, quick-fire quizzes.",
+    },
+    {
+        "id": "snake_knowledge",
+        "name": "Snake Knowledge",
+        "description": (
+            "Classic Snake meets learning. Eat the correct answer letter — "
+            "the wrong ones are in there too, but the correct one isn't "
+            "highlighted. Grow by getting it right, shrink if you don't."
+        ),
+        "best_for": "Recall under pressure. Great for vocabulary, formulas, definitions.",
     },
 ]
 

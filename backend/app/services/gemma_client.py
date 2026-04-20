@@ -10,7 +10,9 @@ calling agent using Pydantic schemas.
 """
 from __future__ import annotations
 
+import base64
 import json
+from pathlib import Path
 from typing import Any
 
 import httpx
@@ -20,6 +22,25 @@ from app.core.config import get_settings
 from app.core.logging import get_logger
 
 log = get_logger(__name__)
+
+
+_VISION_SYSTEM = (
+    "Extract all text from these images of a lesson. Preserve structure. "
+    "Include headings, paragraphs, lists, and diagram labels. Output ONLY "
+    "the extracted text, no commentary."
+)
+
+
+def _image_mime(path: Path) -> str:
+    suffix = path.suffix.lower()
+    if suffix in {".jpg", ".jpeg"}:
+        return "image/jpeg"
+    if suffix == ".png":
+        return "image/png"
+    if suffix == ".webp":
+        return "image/webp"
+    # pdf2image writes PNGs so the default is safe.
+    return "image/png"
 
 
 class GemmaClient:
@@ -46,22 +67,25 @@ class GemmaClient:
         system: str | None = None,
         temperature: float = 0.2,
         json_mode: bool = True,
+        max_tokens: int = 2048,
     ) -> str:
         """Generate a completion. Returns raw text."""
         if self.provider == "vertex":
-            return await self._call_vertex(prompt, system, temperature, json_mode)
+            return await self._call_vertex(prompt, system, temperature, json_mode, max_tokens)
         if self.provider == "google":
-            return await self._call_google(prompt, system, temperature, json_mode)
-        return await self._call_ollama(prompt, system, temperature, json_mode)
+            return await self._call_google(prompt, system, temperature, json_mode, max_tokens)
+        return await self._call_ollama(prompt, system, temperature, json_mode, max_tokens)
 
     async def generate_json(
         self,
         prompt: str,
         system: str | None = None,
         temperature: float = 0.2,
+        max_tokens: int = 2048,
     ) -> dict[str, Any]:
         """Generate and parse JSON. Raises ValueError on invalid JSON."""
-        text = await self.generate(prompt, system, temperature, json_mode=True)
+        text = await self.generate(prompt, system, temperature,
+                                    json_mode=True, max_tokens=max_tokens)
         # Strip common code-fence wrappers that models like to add
         text = text.strip()
         if text.startswith("```"):
@@ -74,6 +98,86 @@ class GemmaClient:
         except json.JSONDecodeError as e:
             log.error("gemma_json_parse_failed", text=text[:500], error=str(e))
             raise ValueError(f"Gemma returned invalid JSON: {e}") from e
+
+    async def extract_text_from_images(self, image_paths: list[Path]) -> str:
+        """Run OCR-equivalent text extraction over a batch of image files.
+
+        Sends every image in a single user turn with multimodal content blocks
+        so the model sees them as one logical document. Vertex-only — other
+        providers raise NotImplementedError so callers can surface a clear
+        error instead of silently returning empty text.
+        """
+        if not image_paths:
+            raise ValueError("extract_text_from_images called with no images")
+
+        if self.provider != "vertex":
+            raise NotImplementedError(
+                "Vision-based text extraction is only wired for the 'vertex' "
+                f"provider. Current provider is '{self.provider}'. Set "
+                "GEMMA_PROVIDER=vertex (and configure GCP_PROJECT_ID) to use "
+                "image uploads and scanned-PDF extraction."
+            )
+
+        if not self.settings.gcp_project_id:
+            raise RuntimeError("GCP_PROJECT_ID not set for vertex provider")
+
+        region = self.settings.gcp_region
+        project = self.settings.gcp_project_id
+        model = self.settings.vertex_model_id
+        url = (
+            f"https://aiplatform.googleapis.com/v1/projects/{project}"
+            f"/locations/{region}/endpoints/openapi/chat/completions"
+        )
+
+        content_blocks: list[dict[str, Any]] = [
+            {"type": "text", "text": _VISION_SYSTEM},
+        ]
+        for path in image_paths:
+            data = path.read_bytes()
+            b64 = base64.b64encode(data).decode("ascii")
+            mime = _image_mime(path)
+            content_blocks.append({
+                "type": "image_url",
+                "image_url": {"url": f"data:{mime};base64,{b64}"},
+            })
+
+        body: dict[str, Any] = {
+            "model": f"google/{model}",
+            "messages": [{"role": "user", "content": content_blocks}],
+            "temperature": 0.0,
+            "max_tokens": 4096,
+            "stream": False,
+        }
+
+        token = await self._get_vertex_access_token()
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json",
+        }
+
+        log.info(
+            "gemma_vision_request",
+            images=len(image_paths),
+            model=model,
+        )
+
+        async with httpx.AsyncClient(timeout=180.0) as client:
+            r = await client.post(url, json=body, headers=headers)
+            r.raise_for_status()
+            data = r.json()
+
+        try:
+            text = data["choices"][0]["message"]["content"] or ""
+        except (KeyError, IndexError) as e:
+            log.error("gemma_vision_response_malformed", data=data)
+            raise RuntimeError(f"Malformed Gemma vision response: {e}") from e
+
+        if not text.strip():
+            raise RuntimeError(
+                "Gemma vision returned empty text. The images may be too "
+                "blurry, too low contrast, or contain no readable content."
+            )
+        return text
 
     # ---------- Provider implementations ----------
 
@@ -92,6 +196,7 @@ class GemmaClient:
     async def _call_vertex(
         self, prompt: str, system: str | None,
         temperature: float, json_mode: bool,
+        max_tokens: int = 2048,
     ) -> str:
         """Vertex AI Model Garden MaaS via the OpenAI-compatible endpoint.
 
@@ -118,7 +223,7 @@ class GemmaClient:
             "model": f"google/{model}",
             "messages": messages,
             "temperature": temperature,
-            "max_tokens": 2048,
+            "max_tokens": max_tokens,
             "stream": False,
         }
         if json_mode:
@@ -144,6 +249,7 @@ class GemmaClient:
     async def _call_google(
         self, prompt: str, system: str | None,
         temperature: float, json_mode: bool,
+        max_tokens: int = 2048,
     ) -> str:
         """Google AI Studio via the generativelanguage.googleapis.com endpoint.
 
@@ -168,7 +274,7 @@ class GemmaClient:
             "contents": contents,
             "generationConfig": {
                 "temperature": temperature,
-                "maxOutputTokens": 2048,
+                "maxOutputTokens": max_tokens,
             },
         }
         if json_mode:
@@ -188,6 +294,7 @@ class GemmaClient:
     async def _call_ollama(
         self, prompt: str, system: str | None,
         temperature: float, json_mode: bool,
+        max_tokens: int = 2048,
     ) -> str:
         """Local Ollama instance (offline toggle)."""
         url = f"{self.settings.ollama_base_url}/api/generate"
@@ -196,7 +303,7 @@ class GemmaClient:
             "prompt": prompt,
             "system": system or "",
             "stream": False,
-            "options": {"temperature": temperature},
+            "options": {"temperature": temperature, "num_predict": max_tokens},
         }
         if json_mode:
             body["format"] = "json"

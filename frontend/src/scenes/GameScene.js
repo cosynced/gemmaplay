@@ -14,6 +14,7 @@
 //
 import Phaser from 'phaser'
 import { api } from '../api/client.js'
+import { logError } from '../utils/errorLogger.js'
 
 const GAME_W = 960
 const GAME_H = 540
@@ -534,8 +535,9 @@ export class GameScene extends Phaser.Scene {
       })
       this._applySignal(signal)
     } catch (e) {
-      // Demo must not die on a network blip
-      console.warn('Adaptation event failed', e)
+      // Gameplay must not die on a flaky analytics POST. The final
+      // /sessions/end call still captures the session outcome.
+      logError(e, { where: 'GameScene.postEvent', sessionId: this.sessionId })
     }
   }
 

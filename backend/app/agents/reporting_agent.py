@@ -10,10 +10,22 @@ from app.models.schemas import Lesson, Report
 from app.prompts.report_prompts import (
     REPORT_SYSTEM_PROMPT,
     REPORT_USER_PROMPT_TEMPLATE,
+    tone_bucket_for_score,
+    tone_guidance_for,
 )
 from app.services.gemma_client import get_gemma_client
 
 log = get_logger(__name__)
+
+
+# Offline fallback lines per bucket so a Gemma failure never produces a
+# cheerful "Nice work!" on a zero-score run.
+_FALLBACK_OPENINGS = {
+    "struggling": "This one was tough.",
+    "partial": "Mixed results.",
+    "solid": "Good run.",
+    "strong": "Excellent work.",
+}
 
 
 class ReportingAgent:
@@ -26,9 +38,16 @@ class ReportingAgent:
         lesson: Lesson,
         session_summary: dict,
         time_seconds: int,
+        player_name: str = "anon",
+        is_self_play: bool = False,
     ) -> Report:
-        log.info("reporting_agent_start", student_id=student_id,
-                 lesson_id=lesson.lesson_id)
+        log.info(
+            "reporting_agent_start",
+            student_id=student_id,
+            lesson_id=lesson.lesson_id,
+            player_name=player_name,
+            is_self_play=is_self_play,
+        )
 
         concepts_mastered: list[str] = []
         concepts_weak: list[str] = []
@@ -62,6 +81,8 @@ class ReportingAgent:
                       if c in concept_by_id],
             weak=[concept_by_id[c].name for c in concepts_weak
                   if c in concept_by_id],
+            player_name=player_name,
+            is_self_play=is_self_play,
         )
 
         report = Report(
@@ -80,9 +101,18 @@ class ReportingAgent:
     async def _generate_narrative(
         self, *, lesson: Lesson, score: int, time_seconds: int,
         hints_used: int, mastered: list[str], weak: list[str],
+        player_name: str, is_self_play: bool,
     ) -> str:
+        bucket = tone_bucket_for_score(score)
+        pov = "second_person" if is_self_play else "third_person"
+        display_name = (player_name or "").strip() or "the player"
+
         gemma = get_gemma_client()
         prompt = REPORT_USER_PROMPT_TEMPLATE.format(
+            player_name=display_name,
+            point_of_view=pov,
+            tone_bucket=bucket,
+            tone_guidance=tone_guidance_for(bucket),
             lesson_title=lesson.title,
             score=score,
             time_seconds=time_seconds,
@@ -97,12 +127,53 @@ class ReportingAgent:
                 temperature=0.7,
                 json_mode=False,
             )
-            return text.strip()
+            cleaned = self._scrub_placeholders(
+                text.strip(), display_name=display_name, is_self_play=is_self_play,
+            )
+            return cleaned
         except Exception as e:
             log.warning("narrative_generation_failed", error=str(e))
-            # Fallback narrative so reports always have one
-            return (
-                f"Student scored {score}/100 on {lesson.title}. "
-                f"Strong areas: {', '.join(mastered) or 'still developing'}. "
-                f"Focus next: {', '.join(weak) or 'general review'}."
+            return self._fallback_narrative(
+                bucket=bucket,
+                lesson_title=lesson.title,
+                mastered=mastered,
+                weak=weak,
+                display_name=display_name,
+                is_self_play=is_self_play,
             )
+
+    def _scrub_placeholders(
+        self, text: str, *, display_name: str, is_self_play: bool,
+    ) -> str:
+        """Last line of defence. If Gemma slipped "[Student Name]" or a
+        bare "Student" label into the output, patch it locally so the
+        user never sees it."""
+        replacements = (
+            ("[Student Name]", display_name),
+            ("[student name]", display_name),
+            ("[Student]", display_name),
+            ("[Player]", display_name),
+            ("[player]", display_name),
+            ("[Name]", display_name),
+        )
+        for needle, replacement in replacements:
+            text = text.replace(needle, replacement)
+        return text.strip()
+
+    def _fallback_narrative(
+        self, *, bucket: str, lesson_title: str,
+        mastered: list[str], weak: list[str],
+        display_name: str, is_self_play: bool,
+    ) -> str:
+        opener = _FALLBACK_OPENINGS.get(bucket, "Mixed results.")
+        strong = ", ".join(mastered) or "still developing"
+        focus = ", ".join(weak) or "general review"
+        if is_self_play:
+            return (
+                f"{opener} You're strong on {strong} in {lesson_title}. "
+                f"Focus next on {focus}."
+            )
+        return (
+            f"{opener} {display_name} is strong on {strong} in "
+            f"{lesson_title}. They should focus next on {focus}."
+        )

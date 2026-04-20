@@ -213,16 +213,6 @@ export function LandingPage({
           GitHub
         </a>
         <a
-          href="https://gemma.dev"
-          target="_blank"
-          rel="noreferrer"
-          className="inline-flex items-center justify-center gap-2 px-4 py-2 sm:px-5 sm:py-2.5 rounded-xl bg-sky-500 hover:bg-sky-600 text-white font-semibold text-xs sm:text-sm shadow-lg shadow-sky-500/25 transition-colors"
-        >
-          <SparklesIcon className="w-4 h-4" />
-          <span className="sm:hidden">Gemma 4 Hackathon</span>
-          <span className="hidden sm:inline">Gemma 4 Good Hackathon submission</span>
-        </a>
-        <a
           href="#"
           onClick={(e) => { e.preventDefault(); window.location.reload() }}
           className="inline-flex items-center justify-center gap-2 px-4 py-2 sm:px-5 sm:py-2.5 rounded-xl bg-red-500 hover:bg-red-600 text-white font-semibold text-xs sm:text-sm shadow-lg shadow-red-500/25 transition-colors"
@@ -505,16 +495,6 @@ export function LandingPage({
           >
             <GithubIcon className="w-5 h-5" />
             GitHub
-          </a>
-          <a
-            href="https://gemma.dev"
-            target="_blank"
-            rel="noreferrer"
-            className="inline-flex items-center justify-center gap-3 px-6 py-3 sm:px-8 sm:py-4 rounded-xl bg-sky-500 hover:bg-sky-600 text-white font-semibold text-sm sm:text-lg shadow-lg shadow-sky-500/25 transition-colors text-center"
-          >
-            <SparklesIcon className="w-5 h-5 shrink-0" />
-            <span className="sm:hidden">Gemma 4 Hackathon submission</span>
-            <span className="hidden sm:inline">Gemma 4 Good Hackathon submission</span>
           </a>
           <a
             href="#"

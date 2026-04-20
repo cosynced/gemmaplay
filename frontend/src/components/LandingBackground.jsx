@@ -142,7 +142,11 @@ export function LandingBackground() {
         backgroundColor: '#0c1220',
         scene: [q.SceneClass],
         scale: {
-          mode: Phaser.Scale.FIT,
+          // ENVELOP fills the quadrant entirely (aspect-preserving, cropping
+          // any overflow). FIT would letterbox the portrait Lane Runner
+          // inside a landscape quadrant, leaving dead space on the sides.
+          // At 25% opacity the crop isn't noticeable for a decorative backdrop.
+          mode: Phaser.Scale.ENVELOP,
           autoCenter: Phaser.Scale.CENTER_BOTH,
           parent,
         },
@@ -196,12 +200,15 @@ export function LandingBackground() {
         // always visually centered in its quadrant even if Phaser's
         // autoCenter margins aren't pixel-perfect for portrait scenes.
         <div key={q.key} className="relative overflow-hidden">
+          {/* Inner wrapper is a positioning anchor only — Phaser's ENVELOP
+              mode will oversize the canvas to cover and the quadrant's
+              `overflow: hidden` does the clipping. */}
           <div
             ref={(el) => {
               const idx = QUADRANTS.findIndex((x) => x.key === q.key)
               containerRefs.current[idx] = el
             }}
-            className="absolute inset-0 flex items-center justify-center [&>canvas]:max-w-full [&>canvas]:max-h-full [&>canvas]:w-auto [&>canvas]:h-auto"
+            className="absolute inset-0"
           />
         </div>
       ))}

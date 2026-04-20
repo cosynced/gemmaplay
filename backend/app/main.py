@@ -46,15 +46,9 @@ app.add_middleware(
     allow_origins=settings.cors_origins_list,
     allow_credentials=True,
     allow_methods=["*"],
-    # Enumerated so X-Session-Token is explicit in prod. Keep X-Teacher-Username
-    # for the pre-auth grace window during rollout.
-    allow_headers=[
-        "Accept",
-        "Authorization",
-        "Content-Type",
-        "X-Teacher-Username",
-        "X-Session-Token",
-    ],
+    allow_headers=["*"],
+    expose_headers=["*"],
+    max_age=600,
 )
 
 app.include_router(health.router)

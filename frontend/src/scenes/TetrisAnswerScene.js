@@ -1,15 +1,16 @@
 // TetrisAnswerScene
 //
 // Arcade-Tetris look on a light gray canvas: a left playfield with a
-// dark-slate rounded-cell grid and chunky rounded blocks, plus a right
-// HUD column of stat panels (NEXT, SCORE, CORRECT, LEVEL, PAUSE).
+// dark-slate rounded-cell grid and a chunky one-cell falling block, plus
+// a right HUD column with the shared answer grid + stat panels.
 //
-// Mechanic is unchanged from the previous prompt: a plain blue block
-// falls, four bins along the bottom show ACTUAL ANSWER TEXT, and the
-// student steers the block into the bin that matches the question's
-// correct answer. Wrong answers stack as colourful semi-transparent
-// blocks above the misclicked bin — five of them in the same column
-// reach the question strip and end the run.
+// Mechanic: a plain cyan block falls; four A/B/C/D bins sit as a single
+// row on the bottom of the playfield. The letter→column mapping is
+// reshuffled per question. Landing in the correct bin either keeps the
+// row on the floor or drops it one cell if it was suspended above; a
+// wrong bin pushes the entire row up by one cell. Blocks never stack —
+// they vanish on contact. Game over fires when the bin row rises near
+// the top of the playfield.
 
 import { incrementAttempts } from '../utils/attemptCounter.js'
 import { QuestionDispatcher } from '../utils/questionDispatcher.js'
@@ -55,16 +56,21 @@ const GRID_ROWS = Math.floor(GRID_H / CELL) // 12
 const COL_COUNT = 4
 const COL_W = GRID_W / COL_COUNT    // 120
 
-// Block: 80 × 80 (2 cells). Leaves 20 px padding on each side of the
-// answer column so the colourful stacks look chunky but not cramped.
-const BLOCK_SIZE = 80
+// Falling block is exactly one grid cell in both dimensions (spec).
+const BLOCK_SIZE = CELL              // 40
+const BLOCK_RADIUS = Math.round(CELL * 0.15) // 6
 
-// Bins occupy the bottom 80 px of the grid (1 block-row tall).
-const BIN_H = 80
-const BIN_TOP = GRID_Y + GRID_H - BIN_H   // 460
-const BIN_BOTTOM = GRID_Y + GRID_H        // 540
+// Bins: one cell tall, anchored to the bottom row when _binRowHeight = 0.
+// When _binRowHeight > 0 the whole row lifts by that many cells.
+const BIN_H = CELL
+const FLOOR_BIN_TOP = GRID_Y + GRID_H - BIN_H     // 500
+const BIN_ROW_LIMIT = GRID_ROWS - 2               // rise >= this → game over
 
-const BLOCK_SPAWN_Y = GRID_Y + BLOCK_SIZE / 2 + 8 // 108
+function binTopAtHeight(height) {
+  return FLOOR_BIN_TOP - height * CELL
+}
+
+const BLOCK_SPAWN_Y = GRID_Y + BLOCK_SIZE / 2 + 4 // 84
 
 // ---------- Tuning (unchanged from the previous prompt) ----------
 
@@ -112,10 +118,6 @@ const GRID_HUD_OPTS = {
   chipLetterSize: 14,
 }
 
-// Wrong-stack colour rotation — red / amber / violet / pink, cycling by
-// stack depth. Matches the reference's rainbow tower.
-const STACK_COLORS = [0xef4444, 0xf59e0b, 0x8b5cf6, 0xec4899]
-
 // ---------- Helpers ----------
 
 function colCenterX(col) {
@@ -125,33 +127,35 @@ function colCenterX(col) {
 /**
  * Build a chunky rounded block as a Phaser Container so shadow + body +
  * highlight travel together. Returns the container; call `redrawBlock`
- * to change its colour/alpha later.
+ * to change its colour/alpha later. Sizing defaults to one grid cell
+ * but an explicit size can be supplied for scaled previews.
  */
-function makeBlock(scene, x, y, fillColor, alpha = 1) {
+function makeBlock(scene, x, y, fillColor, alpha = 1, size = BLOCK_SIZE) {
   const shadow = scene.add.graphics()
   const body = scene.add.graphics()
   const highlight = scene.add.graphics()
   const container = scene.add.container(x, y, [shadow, body, highlight])
-  container.setSize(BLOCK_SIZE, BLOCK_SIZE)
+  container.setSize(size, size)
+  container.setData('blockSize', size)
   redrawBlock(container, fillColor, alpha)
   return container
 }
 
 function redrawBlock(container, fillColor, alpha = 1) {
   const [shadow, body, highlight] = container.list
-  const s = BLOCK_SIZE
-  const r = 10
+  const s = container.getData('blockSize') || BLOCK_SIZE
+  const r = Math.max(2, Math.round(s * 0.15))
   shadow.clear()
   shadow.fillStyle(0x000000, 0.25 * alpha)
-  shadow.fillRoundedRect(-s / 2 + 3, -s / 2 + 5, s, s, r)
+  shadow.fillRoundedRect(-s / 2 + 2, -s / 2 + 3, s, s, r)
   body.clear()
   body.fillStyle(fillColor, alpha)
   body.fillRoundedRect(-s / 2, -s / 2, s, s, r)
-  body.lineStyle(2, 0xffffff, 0.35 * alpha)
+  body.lineStyle(1.5, 0xffffff, 0.35 * alpha)
   body.strokeRoundedRect(-s / 2, -s / 2, s, s, r)
   highlight.clear()
   highlight.fillStyle(0xffffff, 0.35 * alpha)
-  highlight.fillRoundedRect(-s / 2 + 8, -s / 2 + 8, s / 2 - 4, s / 4 - 2, 6)
+  highlight.fillRoundedRect(-s / 2 + 4, -s / 2 + 4, s / 2 - 2, s / 4 - 1, Math.max(1, r - 3))
 }
 
 // ---------- Scene ----------
@@ -198,17 +202,11 @@ export class TetrisAnswerScene extends Phaser.Scene {
   }
 
   _snapshot() {
-    const stacks = [[], [], [], []]
-    for (let col = 0; col < COL_COUNT; col++) {
-      for (let i = 0; i < this.stacks[col].length; i++) {
-        stacks[col].push(i % STACK_COLORS.length)
-      }
-    }
     return {
       score: this.score,
       correctCount: this.correctCount,
       dropMs: this.dropMs,
-      stacks,
+      binRowHeight: this._binRowHeight,
       elapsedMs: Date.now() - this.startTs - (this._accumulatedPauseMs || 0),
       attemptNumber: this.attemptNumber,
       dispatcher: this.qd ? this.qd.snapshot() : null,
@@ -221,22 +219,13 @@ export class TetrisAnswerScene extends Phaser.Scene {
       this.score = snap.score ?? 0
       this.correctCount = snap.correctCount ?? 0
       this.dropMs = snap.dropMs ?? START_DROP_MS
+      this._binRowHeight = Math.min(
+        Math.max(snap.binRowHeight | 0, 0),
+        BIN_ROW_LIMIT - 1,
+      )
       this.startTs = Date.now() - (snap.elapsedMs | 0)
       this._accumulatedPauseMs = 0
       if (snap.attemptNumber) this.attemptNumber = snap.attemptNumber
-      // Rebuild each column's wrong-stack visually.
-      if (Array.isArray(snap.stacks)) {
-        for (let col = 0; col < COL_COUNT && col < snap.stacks.length; col++) {
-          const colorIdxList = snap.stacks[col] || []
-          for (let i = 0; i < colorIdxList.length; i++) {
-            const y = BIN_TOP - (i + 1) * BLOCK_SIZE + BLOCK_SIZE / 2
-            const color = STACK_COLORS[colorIdxList[i] % STACK_COLORS.length]
-            const container = makeBlock(this, colCenterX(col), y, color, 0.8)
-              .setDepth(35)
-            this.stacks[col].push(container)
-          }
-        }
-      }
       this._updateHudScore()
       this._updateHudCorrect()
       this._updateHudLevel()
@@ -262,10 +251,12 @@ export class TetrisAnswerScene extends Phaser.Scene {
     this._buildHud()
 
     // Mechanic state
-    this.stacks = [[], [], [], []]
     this.activeBlock = null
     this.bins = null
     this.dropMs = START_DROP_MS
+    this._binRowHeight = 0
+    this._binMoving = false
+    this._binWarnTween = null
 
     this._setupInput()
 
@@ -342,22 +333,39 @@ export class TetrisAnswerScene extends Phaser.Scene {
 
     const panelX = HUD_X + 20
     const panelW = HUD_W - 40
-    const statTop = 240
-    const statH = 54
-    const gap = 8
+    const statTop = 200
+    const statH = 48
+    const gap = 6
 
     const statY = (i) => statTop + i * (statH + gap)
-    const pauseTop = statTop + 3 * (statH + gap) + 10
+    const pauseTop = statTop + 4 * (statH + gap) + 10
     const pauseH = GAME_H - pauseTop - 20
 
-    const scorePanel = this._drawHudPanel('SCORE', panelX, statY(0), panelW, statH)
+    this._drawNextPanel(panelX, statY(0), panelW, statH)
+    const scorePanel = this._drawHudPanel('SCORE', panelX, statY(1), panelW, statH)
     this.hud.scoreVal = this._drawHudValue(scorePanel, '0')
-    const correctPanel = this._drawHudPanel('CORRECT', panelX, statY(1), panelW, statH)
+    const correctPanel = this._drawHudPanel('CORRECT', panelX, statY(2), panelW, statH)
     this.hud.correctVal = this._drawHudValue(correctPanel, '0')
-    const questionPanel = this._drawHudPanel('QUESTION', panelX, statY(2), panelW, statH)
+    const questionPanel = this._drawHudPanel('QUESTION', panelX, statY(3), panelW, statH)
     this.hud.questionVal = this._drawHudValue(questionPanel, '1')
 
     this._drawPauseButton(panelX, pauseTop, panelW, pauseH)
+  }
+
+  _drawNextPanel(x, y, w, h) {
+    // Decorative panel showing the next block — always a plain cyan cube
+    // since every falling block is identical. Sized to exactly one cell.
+    this._drawHudPanel('NEXT', x, y, w, h)
+    const previewSize = Math.min(h - 20, CELL)
+    const block = makeBlock(
+      this,
+      x + w - previewSize / 2 - 10,
+      y + h / 2 + 2,
+      COLOR.fallingBlock,
+      1,
+      previewSize,
+    ).setDepth(11)
+    this._nextPreview = block
   }
 
   _drawHudPanel(label, x, y, w, h) {
@@ -556,6 +564,7 @@ export class TetrisAnswerScene extends Phaser.Scene {
   // ---------- Bins ----------
 
   _buildBins(order, correctCol) {
+    const binTopY = binTopAtHeight(this._binRowHeight)
     const sprites = []
     const labels = []
     const borders = []
@@ -565,18 +574,18 @@ export class TetrisAnswerScene extends Phaser.Scene {
       const color = OPTION_COLORS[optIdx]
       const letter = OPTION_LETTERS[optIdx]
       const x = colCenterX(i)
-      const y = BIN_TOP + BIN_H / 2
       const w = COL_W - 8
-      const h = BIN_H - 8
+      const h = BIN_H - 4
+      const yCenter = binTopY + BIN_H / 2
       const bg = this.add.graphics().setDepth(20)
       bg.fillStyle(0xffffff, 1)
-      bg.fillRoundedRect(x - w / 2, y - h / 2, w, h, 10)
+      bg.fillRoundedRect(x - w / 2, yCenter - h / 2, w, h, 8)
       const border = this.add.graphics().setDepth(21)
       border.lineStyle(4, color, 1)
-      border.strokeRoundedRect(x - w / 2 + 2, y - h / 2 + 2, w - 4, h - 4, 8)
-      const label = this.add.text(x, y, letter, {
+      border.strokeRoundedRect(x - w / 2 + 2, yCenter - h / 2 + 2, w - 4, h - 4, 6)
+      const label = this.add.text(x, yCenter, letter, {
         fontFamily: 'Inter, system-ui, sans-serif',
-        fontSize: '40px',
+        fontSize: '28px',
         color: COLOR.binText,
         fontStyle: 'bold',
       }).setOrigin(0.5).setDepth(22)
@@ -590,10 +599,12 @@ export class TetrisAnswerScene extends Phaser.Scene {
       order: order.slice(),
       colToOptionIdx: order.slice(),
     }
+    this._applyBinWarningState()
   }
 
   _disposeBins(withFade, onComplete) {
     if (!this.bins) { if (onComplete) onComplete(); return }
+    if (this._binWarnTween) { this._binWarnTween.stop(); this._binWarnTween = null }
     const toKill = [
       ...this.bins.sprites,
       ...this.bins.borders,
@@ -614,11 +625,48 @@ export class TetrisAnswerScene extends Phaser.Scene {
     }
   }
 
-  _clearStacks() {
-    for (const col of this.stacks) {
-      for (const c of col) c.destroy()
-      col.length = 0
-    }
+  _binElements() {
+    if (!this.bins) return []
+    return [...this.bins.sprites, ...this.bins.borders, ...this.bins.labels]
+  }
+
+  // Tween the whole bin row by ±1 grid cell. `delta`: +1 = up (wrong),
+  // -1 = down (correct while suspended). Caller decides when to call
+  // _advanceQuestion next so the movement reads clearly to the player.
+  _moveBinRow(delta, onComplete) {
+    if (!this.bins || this._binMoving) { if (onComplete) onComplete(); return }
+    this._binMoving = true
+    this._binRowHeight = Math.max(0, this._binRowHeight + delta)
+    const elements = this._binElements()
+    this.tweens.add({
+      targets: elements,
+      y: `${delta > 0 ? '-' : '+'}=${CELL}`,
+      duration: 250,
+      ease: 'Sine.easeOut',
+      onComplete: () => {
+        this._binMoving = false
+        this._applyBinWarningState()
+        if (onComplete) onComplete()
+      },
+    })
+  }
+
+  _applyBinWarningState() {
+    // At the edge of game-over, pulse red on the border graphics so the
+    // player sees the warning before the next wrong answer kills them.
+    if (!this.bins) return
+    if (this._binWarnTween) { this._binWarnTween.stop(); this._binWarnTween = null }
+    const atWarn = this._binRowHeight >= BIN_ROW_LIMIT - 1
+    for (const border of this.bins.borders) border.setAlpha(1)
+    if (!atWarn) return
+    this._binWarnTween = this.tweens.add({
+      targets: this.bins.borders,
+      alpha: { from: 1, to: 0.4 },
+      duration: 420,
+      yoyo: true,
+      repeat: -1,
+      ease: 'Sine.easeInOut',
+    })
   }
 
   // ---------- Falling block ----------
@@ -644,8 +692,8 @@ export class TetrisAnswerScene extends Phaser.Scene {
     const speed = (BLOCK_SIZE * 1000) / effMs
     this.activeBlock.y += speed * dt
 
-    const stackHeight = this.stacks[this.activeBlock.col].length
-    const landingY = BIN_TOP - stackHeight * BLOCK_SIZE - BLOCK_SIZE / 2
+    const binTopY = binTopAtHeight(this._binRowHeight)
+    const landingY = binTopY - BLOCK_SIZE / 2
 
     if (this.activeBlock.y >= landingY) {
       this.activeBlock.y = landingY
@@ -673,39 +721,65 @@ export class TetrisAnswerScene extends Phaser.Scene {
       this._updateHudScore()
       this._updateHudCorrect()
       this._flash(0x10b981)
-      this._floatingScore(colCenterX(col), BIN_TOP - 20)
+      this._floatingScore(colCenterX(col), block.y - 20)
 
-      // Briefly flash the block green before fading it away.
+      // Block vanishes: flash green, fade out. Blocks never persist.
       redrawBlock(block.container, COLOR.correctBlock, 1)
       this.tweens.add({
         targets: block.container,
-        alpha: 0, scale: 0.92, duration: 280, ease: 'Sine.easeIn',
+        alpha: 0, scale: 0.92, duration: 220, ease: 'Sine.easeIn',
         onComplete: () => { try { block.container.destroy() } catch { /* torn */ } },
+      })
+
+      // Gentle bob on the bins for "correct!" feedback.
+      const bobTargets = this._binElements()
+      this.tweens.add({
+        targets: bobTargets,
+        y: '-=4', duration: 120, yoyo: true, ease: 'Sine.easeOut',
       })
 
       this._maybeSpeedBump()
 
-      this.qd.advance()
-      this._saveSnapshot()
-      this._disposeBins(true, () => {
-        if (!this.ended) this._advanceQuestion({ refreshBins: true })
-      })
-    } else {
-      this._flash(0xef4444)
-      this.cameras.main.shake(150, 0.005)
-
-      const colorIdx = this.stacks[col].length % STACK_COLORS.length
-      redrawBlock(block.container, STACK_COLORS[colorIdx], 0.8)
-      this.stacks[col].push(block.container)
-
-      if (this._stackReachedTop()) {
-        this._banner('Tower reached the top.', '#ef4444')
-        return this._endSession()
+      const afterBinMove = () => {
+        this.qd.advance()
+        this._saveSnapshot()
+        if (!this.ended) {
+          this._disposeBins(true, () => {
+            if (!this.ended) this._advanceQuestion({ refreshBins: true })
+          })
+        }
       }
 
-      this.qd.advance()
-      this._saveSnapshot()
-      this._advanceQuestion({ refreshBins: false })
+      if (this._binRowHeight > 0) {
+        // Suspended row drops back toward the floor, then advance.
+        this._moveBinRow(-1, afterBinMove)
+      } else {
+        afterBinMove()
+      }
+    } else {
+      this._flash(0xef4444)
+      this.cameras.main.shake(200, 0.004)
+
+      // Block vanishes with a red pulse — no stacking visuals anywhere.
+      redrawBlock(block.container, 0xef4444, 0.85)
+      this.tweens.add({
+        targets: block.container,
+        alpha: 0, scale: 0.9, duration: 220, ease: 'Sine.easeIn',
+        onComplete: () => { try { block.container.destroy() } catch { /* torn */ } },
+      })
+
+      // Bin row rises by one cell. If the new height reaches the limit,
+      // end the session after the move animation so the player sees it.
+      this._moveBinRow(+1, () => {
+        if (this._binRowHeight >= BIN_ROW_LIMIT) {
+          this._banner('Answer row reached the top.', '#ef4444')
+          this._endSession()
+          return
+        }
+        this.qd.advance()
+        this._saveSnapshot()
+        if (!this.ended) this._advanceQuestion({ refreshBins: true })
+      })
     }
   }
 
@@ -717,13 +791,6 @@ export class TetrisAnswerScene extends Phaser.Scene {
       this.dropMs = next
       this._banner('Speeding up!', '#10b981')
     }
-  }
-
-  _stackReachedTop() {
-    for (const col of this.stacks) {
-      if (BIN_TOP - col.length * BLOCK_SIZE <= GRID_Y) return true
-    }
-    return false
   }
 
   // ---------- HUD updates ----------

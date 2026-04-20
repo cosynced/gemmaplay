@@ -23,13 +23,14 @@ const PREVIEWS = {
   tetris_answer: {
     title: 'Answer Stacker',
     accent: '#a855f7',
-    tagline: 'Plain block falls. Steer it into the bin with the correct answer.',
+    tagline: 'Plain block falls. Steer into the bin with the correct answer.',
     Visual: TetrisVisual,
     rules: [
-      'Read the question at the top.',
-      'A plain block falls from the sky.',
-      'Steer it into the bin with the correct answer.',
-      'Wrong answers stack up in that column. Let a stack reach the top and it\u2019s game over.',
+      'Read the question and the 4 options at the top.',
+      'Steer the falling block into the bin with the correct letter.',
+      'Correct: bin row stays on the floor (or drops back if it was up).',
+      'Wrong: bin row shifts up toward the question area.',
+      'Game over when the bin row reaches the top.',
     ],
     controls: [
       'Keyboard: Left / Right arrow keys, Down to hard-drop',
@@ -288,24 +289,24 @@ function LaneRunnerVisual({ accent, className }) {
 }
 
 function TetrisVisual({ className }) {
-  // Arcade-tetris look: light gray background, dark slate grid cells,
-  // blue rounded block falling above 4 colored-border bins.
+  // Light gray background, dark-slate decorative grid, one cell-sized cyan
+  // block falling above 4 letter-only bins resting on the bottom row.
   const bins = [
-    { stroke: '#0ea5e9', label: 'Lagos' },
-    { stroke: '#a855f7', label: 'Nairobi' },
-    { stroke: '#facc15', label: 'Cairo' },
-    { stroke: '#10b981', label: 'Accra' },
+    { stroke: '#0ea5e9', letter: 'A' },
+    { stroke: '#a855f7', letter: 'B' },
+    { stroke: '#f59e0b', letter: 'C' },
+    { stroke: '#10b981', letter: 'D' },
   ]
   const binW = 68
   const binX = (i) => 20 + i * 75
-  // Decorative grid: 8 cols × 4 rows of rounded dark cells on light gray bg.
   const cellSize = 14
   const gridLeft = 20
   const gridTop = 8
   const cols = 20
-  const rows = 5
+  const rows = 6
+  const blockCol = 1
   return (
-    <svg viewBox="0 0 320 120" className={className} role="img" aria-label="Blue block falling toward four answer bins on a light gray grid">
+    <svg viewBox="0 0 320 120" className={className} role="img" aria-label="Cyan block falling toward four letter bins on a light gray grid">
       <rect x="0" y="0" width="320" height="120" fill="#d1d5db" />
 
       {/* decorative dark-cell grid */}
@@ -324,23 +325,23 @@ function TetrisVisual({ className }) {
         ))
       )}
 
-      {/* blue rounded falling block above column 1 */}
-      <rect x={binX(1) + 14} y="16" width="40" height="40" rx="6" fill="#3b82f6" />
-      <rect x={binX(1) + 18} y="20" width="32" height="6" rx="3" fill="#ffffff" fillOpacity="0.35" />
+      {/* cell-sized cyan falling block above column blockCol */}
+      <rect x={binX(blockCol) + 26} y="20" width="16" height="16" rx="2.5" fill="#3b82f6" />
+      <rect x={binX(blockCol) + 29} y="23" width="10" height="3" rx="1" fill="#ffffff" fillOpacity="0.45" />
 
-      {/* bin row with answer text, white bg + colored border */}
+      {/* bin row on the floor with large letter only, colored border */}
       {bins.map((b, i) => (
-        <g key={b.label}>
+        <g key={b.letter}>
           <rect
-            x={binX(i)} y="82" width={binW} height="28" rx="4"
+            x={binX(i)} y="86" width={binW} height="24" rx="4"
             fill="#ffffff" stroke={b.stroke} strokeWidth="2.5"
           />
           <text
-            x={binX(i) + binW / 2} y="100"
-            fontSize="10" fontFamily="Inter, sans-serif" fontWeight="700"
+            x={binX(i) + binW / 2} y="104"
+            fontSize="16" fontFamily="Inter, sans-serif" fontWeight="700"
             fill="#0c1220" textAnchor="middle"
           >
-            {b.label}
+            {b.letter}
           </text>
         </g>
       ))}

@@ -60,10 +60,10 @@ const PREVIEWS = {
     tagline: 'Eat the correct answer. Grow. Keep going.',
     Visual: SnakeVisual,
     rules: [
-      'Move the snake to eat the food tile labeled with the correct answer.',
-      'Correct food = grow + score. Wrong food = shrink.',
-      'Hit a wall or yourself = game over.',
-      'The correct answer is NOT highlighted. Read the question and know your stuff.',
+      'Snake moves around the grid. Steer with arrow keys or swipe.',
+      'Eat the food tile with the correct answer letter.',
+      'Correct: snake grows. Wrong: snake shrinks by 1 segment.',
+      'Game over when you hit a wall, bite yourself, or shrink to nothing.',
     ],
     controls: [
       'Keyboard: Arrow keys or WASD',
@@ -450,23 +450,51 @@ function ShooterVisual({ className }) {
   )
 }
 
-function SnakeVisual({ accent, className }) {
+function SnakeVisual({ className }) {
+  // Stylized snake with cyan head + slate body heading toward 4
+  // color-coded letter tiles. Matches the in-game palette.
+  const tiles = [
+    { letter: 'A', color: '#0ea5e9' },
+    { letter: 'B', color: '#a855f7' },
+    { letter: 'C', color: '#f59e0b' },
+    { letter: 'D', color: '#10b981' },
+  ]
+  const tileX = (i) => 176 + i * 32
+  const bodyCols = [16, 40, 64, 88, 112]
   return (
-    <svg viewBox="0 0 320 120" className={className} role="img" aria-label="Snake approaching lettered food">
-      <rect x="0" y="0" width="320" height="120" fill="#0c1220" />
-      {/* grid hint */}
-      {[0, 1, 2, 3, 4, 5, 6, 7].map((i) => (
-        <line key={`v${i}`} x1={40 + i * 36} y1="20" x2={40 + i * 36} y2="100" stroke="#0f172a" strokeWidth="1" />
+    <svg viewBox="0 0 320 120" className={className} role="img" aria-label="Snake approaching four letter food tiles">
+      <rect x="0" y="0" width="320" height="120" fill="#0a0f1c" />
+      {/* faint grid */}
+      {[0, 1, 2, 3, 4, 5, 6, 7, 8].map((i) => (
+        <line key={`v${i}`} x1={16 + i * 32} y1="18" x2={16 + i * 32} y2="102" stroke="#ffffff" strokeOpacity="0.05" strokeWidth="1" />
       ))}
-      {/* snake body */}
-      {[0, 1, 2, 3].map((i) => (
-        <rect key={i} x={60 + i * 20} y="56" width="18" height="18" rx="3" fill={accent} opacity={0.4 + i * 0.15} />
+      {[0, 1, 2].map((i) => (
+        <line key={`h${i}`} x1="16" y1={34 + i * 28} x2="304" y2={34 + i * 28} stroke="#ffffff" strokeOpacity="0.05" strokeWidth="1" />
       ))}
-      {/* foods */}
-      {['A', 'B', 'C', 'D'].map((l, i) => (
-        <g key={l}>
-          <rect x={170 + i * 28} y="52" width="22" height="22" rx="3" fill="#1e293b" />
-          <text x={181 + i * 28} y="68" fontSize="12" fontFamily="Inter, sans-serif" fontWeight="700" fill="#f1f5f9" textAnchor="middle">{l}</text>
+      {/* snake body (tail → head) with slate gradient */}
+      {bodyCols.slice(0, 4).map((x, i) => {
+        const t = 1 - i / 4
+        const r = Math.round(0x1e + (0x33 - 0x1e) * t)
+        const g = Math.round(0x29 + (0x41 - 0x29) * t)
+        const b = Math.round(0x3b + (0x55 - 0x3b) * t)
+        const fill = `rgb(${r}, ${g}, ${b})`
+        return <rect key={`body-${i}`} x={x} y="52" width="22" height="22" rx="4" fill={fill} />
+      })}
+      {/* snake head (cyan, with two eye dots) */}
+      <rect x={bodyCols[4]} y="52" width="22" height="22" rx="5" fill="#22d3ee" />
+      <circle cx={bodyCols[4] + 6} cy={58} r="2" fill="#ffffff" />
+      <circle cx={bodyCols[4] + 16} cy={58} r="2" fill="#ffffff" />
+      <circle cx={bodyCols[4] + 6} cy={58} r="1" fill="#0f172a" />
+      <circle cx={bodyCols[4] + 16} cy={58} r="1" fill="#0f172a" />
+      {/* color-coded food tiles */}
+      {tiles.map((t, i) => (
+        <g key={t.letter}>
+          <rect x={tileX(i)} y="50" width="24" height="24" rx="5" fill={t.color} stroke="#ffffff" strokeOpacity="0.55" />
+          <text
+            x={tileX(i) + 12} y={68}
+            fontSize="14" fontFamily="Inter, sans-serif" fontWeight="800"
+            fill="#0c1220" textAnchor="middle"
+          >{t.letter}</text>
         </g>
       ))}
     </svg>

@@ -25,7 +25,7 @@ import {
   renderAnswerGrid,
 } from './AnswerGridHUD.js'
 import { shooterAutoPlay } from './AutoPlayAdapter.js'
-import { addHudPauseButton, createPauseOverlay } from './PauseOverlay.js'
+import { createPauseOverlay } from './PauseOverlay.js'
 
 // ---------- Layout ----------
 
@@ -903,15 +903,36 @@ export class ShooterAnswerScene extends Phaser.Scene {
 
   // ---------- Pause ----------
 
+  _buildHudPauseButton() {
+    const pauseX = GAME_W - 28
+    const pauseY = HUD_STRIP_TOP + HUD_STRIP_H / 2
+    const size = 44
+
+    const rect = this.add.rectangle(0, 0, size, size, 0x1e293b, 0.9)
+      .setStrokeStyle(1.5, 0xffffff, 0.35)
+    rect.setInteractive({ useHandCursor: true })
+    rect.setDepth(5000)
+    rect.on('pointerover', () => rect.setFillStyle(0x334155, 0.95))
+    rect.on('pointerout', () => rect.setFillStyle(0x1e293b, 0.9))
+    rect.on('pointerdown', () => {
+      console.log('[ShooterAnswerScene] pause button clicked')
+      this._togglePause()
+    })
+
+    const icon = this.add.graphics()
+    icon.fillStyle(0xe2e8f0, 1)
+    icon.fillRect(-7, -8, 4, 16)
+    icon.fillRect(3, -8, 4, 16)
+
+    const container = this.add.container(pauseX, pauseY, [rect, icon])
+    container.setDepth(5000)
+    return container
+  }
+
   _installPauseControls() {
     if (this.autoPlay) return
     this._pauseOverlay = createPauseOverlay(this)
-    this._pauseButton = addHudPauseButton(this, {
-      x: GAME_W - 28,
-      y: HUD_STRIP_TOP + HUD_STRIP_H / 2,
-      onClick: () => this._togglePause(),
-      depth: 210,
-    })
+    this._pauseButton = this._buildHudPauseButton()
     this.input.keyboard.on('keydown-P', () => this._togglePause())
     this.input.keyboard.on('keydown-ESC', () => this._togglePause())
 

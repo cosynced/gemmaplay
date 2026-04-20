@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import base64
 import json
+import time
 from pathlib import Path
 from typing import Any
 
@@ -22,6 +23,23 @@ from app.core.config import get_settings
 from app.core.logging import get_logger
 
 log = get_logger(__name__)
+
+# Gemma generations for a full lesson can take well over a minute on
+# large prompts. The read timeout is the one that actually bites during
+# response streaming, so we give it most of the headroom; the others
+# stay tight so network hiccups still fail fast.
+_GEMMA_TIMEOUT = httpx.Timeout(
+    connect=10.0,
+    read=240.0,
+    write=30.0,
+    pool=5.0,
+)
+_VISION_TIMEOUT = httpx.Timeout(
+    connect=10.0,
+    read=240.0,
+    write=60.0,
+    pool=5.0,
+)
 
 
 _VISION_SYSTEM = (
@@ -161,10 +179,16 @@ class GemmaClient:
             model=model,
         )
 
-        async with httpx.AsyncClient(timeout=180.0) as client:
+        start = time.perf_counter()
+        async with httpx.AsyncClient(timeout=_VISION_TIMEOUT) as client:
             r = await client.post(url, json=body, headers=headers)
             r.raise_for_status()
             data = r.json()
+        log.info(
+            "gemma_vision_completed",
+            elapsed_s=round(time.perf_counter() - start, 2),
+            images=len(image_paths),
+        )
 
         try:
             text = data["choices"][0]["message"]["content"] or ""
@@ -235,10 +259,17 @@ class GemmaClient:
             "Content-Type": "application/json",
         }
 
-        async with httpx.AsyncClient(timeout=60.0) as client:
+        start = time.perf_counter()
+        async with httpx.AsyncClient(timeout=_GEMMA_TIMEOUT) as client:
             r = await client.post(url, json=body, headers=headers)
             r.raise_for_status()
             data = r.json()
+        log.info(
+            "gemma_vertex_completed",
+            elapsed_s=round(time.perf_counter() - start, 2),
+            max_tokens=max_tokens,
+            json_mode=json_mode,
+        )
 
         try:
             return data["choices"][0]["message"]["content"]
@@ -280,10 +311,17 @@ class GemmaClient:
         if json_mode:
             body["generationConfig"]["responseMimeType"] = "application/json"
 
-        async with httpx.AsyncClient(timeout=60.0) as client:
+        start = time.perf_counter()
+        async with httpx.AsyncClient(timeout=_GEMMA_TIMEOUT) as client:
             r = await client.post(url, json=body)
             r.raise_for_status()
             data = r.json()
+        log.info(
+            "gemma_google_completed",
+            elapsed_s=round(time.perf_counter() - start, 2),
+            max_tokens=max_tokens,
+            json_mode=json_mode,
+        )
 
         try:
             return data["candidates"][0]["content"]["parts"][0]["text"]
@@ -308,7 +346,7 @@ class GemmaClient:
         if json_mode:
             body["format"] = "json"
 
-        async with httpx.AsyncClient(timeout=120.0) as client:
+        async with httpx.AsyncClient(timeout=_GEMMA_TIMEOUT) as client:
             r = await client.post(url, json=body)
             r.raise_for_status()
             return r.json().get("response", "")

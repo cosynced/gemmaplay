@@ -1,8 +1,7 @@
 // LandingBackground — 4 live Phaser scenes running in autoPlay mode as a
 // quadrant backdrop behind the hero. Each quadrant runs a small, throttled
 // Phaser.Game; pointer events are disabled so clicks fall through to the
-// hero CTAs. On screens <768px, we skip Phaser entirely and render a
-// static gradient.
+// hero CTAs. Renders on mobile too (2×2 grid, lower fps to save battery).
 
 import { useEffect, useRef, useState } from 'react'
 import Phaser from '../scenes/phaser-global.js'
@@ -52,12 +51,7 @@ const DEMO_LESSON = {
   ],
 }
 
-// Per-scene base_speed tuned for a calm, readable backdrop. Each scene
-// interprets base_speed in its own units:
-//   LaneRunner: scroll px/sec (default 300)
-//   Tetris:     fall  px/sec (default 40)
-//   Shooter:    descent px/sec (default 20)
-//   Snake:      doesn't read base_speed; we pass tickMs instead.
+// Per-scene base_speed tuned for a calm, readable backdrop.
 function makeGame(gameId, baseSpeed) {
   return {
     game_id: gameId,
@@ -69,66 +63,82 @@ function makeGame(gameId, baseSpeed) {
   }
 }
 
+// Per-quadrant Phaser.Game dimensions match each scene's native design
+// size so the scene never has to self-resize mid-create (which was
+// shifting the Lane Runner canvas off-screen).
 const QUADRANTS = [
   {
     SceneClass: LaneRunnerScene,
     key: 'LaneRunnerScene',
     game: makeGame('landing_bg_lane', 120),
+    width: 540,   // portrait
+    height: 900,
   },
   {
     SceneClass: TetrisAnswerScene,
     key: 'TetrisAnswerScene',
     game: makeGame('landing_bg_tetris', 18),
+    width: 960,
+    height: 540,
   },
   {
     SceneClass: ShooterAnswerScene,
     key: 'ShooterAnswerScene',
     game: makeGame('landing_bg_shooter', 8),
+    width: 960,
+    height: 540,
   },
   {
     SceneClass: SnakeKnowledgeScene,
     key: 'SnakeKnowledgeScene',
     game: makeGame('landing_bg_snake', 0),
+    width: 960,
+    height: 540,
     tickMs: 520,
   },
 ]
 
-function useWideScreen(breakpoint = 768) {
-  const [wide, setWide] = useState(() =>
-    typeof window !== 'undefined' && window.innerWidth >= breakpoint
+function useIsMobile(breakpoint = 768) {
+  const [mobile, setMobile] = useState(() =>
+    typeof window !== 'undefined' && window.innerWidth < breakpoint
   )
   useEffect(() => {
     if (typeof window === 'undefined') return
-    const mq = window.matchMedia(`(min-width: ${breakpoint}px)`)
-    const onChange = (e) => setWide(e.matches)
-    // Safari <14 doesn't support addEventListener on MQL
+    const mq = window.matchMedia(`(max-width: ${breakpoint - 1}px)`)
+    const onChange = (e) => setMobile(e.matches)
     if (mq.addEventListener) mq.addEventListener('change', onChange)
     else mq.addListener(onChange)
-    setWide(mq.matches)
+    setMobile(mq.matches)
     return () => {
       if (mq.removeEventListener) mq.removeEventListener('change', onChange)
       else mq.removeListener(onChange)
     }
   }, [breakpoint])
-  return wide
+  return mobile
 }
 
 export function LandingBackground() {
-  const wide = useWideScreen(768)
+  const isMobile = useIsMobile(768)
   const containerRefs = useRef(QUADRANTS.map(() => null))
   const gamesRef = useRef([])
 
   useEffect(() => {
-    if (!wide) return
+    // Halve the effective tick rate on mobile to save battery. Phaser's
+    // `fps.target` throttles the whole loop — scene Time events, autoplay
+    // timers, and update() all slow together without touching any scene.
+    const targetFps = isMobile ? 12 : 24
 
     const games = QUADRANTS.map((q, i) => {
       const parent = containerRefs.current[i]
       if (!parent) return null
+      const tickMs = q.tickMs != null
+        ? (isMobile ? q.tickMs * 2 : q.tickMs)
+        : undefined
       const game = new Phaser.Game({
         type: Phaser.AUTO,
         parent,
-        width: 960,
-        height: 540,
+        width: q.width,
+        height: q.height,
         backgroundColor: '#0c1220',
         scene: [q.SceneClass],
         scale: {
@@ -136,8 +146,7 @@ export function LandingBackground() {
           autoCenter: Phaser.Scale.CENTER_BOTH,
           parent,
         },
-        fps: { target: 24, forceSetTimeOut: true },
-        // Disable input entirely — backdrop is non-interactive.
+        fps: { target: targetFps, forceSetTimeOut: true },
         input: { keyboard: false, mouse: false, touch: false, activePointers: 0 },
         physics: { default: 'arcade', arcade: { gravity: { y: 0 } } },
       })
@@ -146,15 +155,14 @@ export function LandingBackground() {
         lesson: DEMO_LESSON,
         sessionId: `landing_bg_${i}`,
         autoPlay: true,
-        tickMs: q.tickMs,
-        onSessionEnd: () => {}, // never fires in autoPlay
+        tickMs,
+        onSessionEnd: () => {},
       })
       return game
     }).filter(Boolean)
 
     gamesRef.current = games
 
-    // Pause the render/update loops when the tab is hidden.
     const pauseAll = () => {
       for (const g of gamesRef.current) {
         try { g.loop && g.loop.sleep && g.loop.sleep() } catch { /* ignore */ }
@@ -175,27 +183,25 @@ export function LandingBackground() {
       }
       gamesRef.current = []
     }
-  }, [wide])
-
-  if (!wide) {
-    return (
-      <div
-        aria-hidden
-        className="absolute inset-0 z-0 pointer-events-none bg-gradient-to-br from-sky-900/40 via-slate-950 to-violet-900/40"
-      />
-    )
-  }
+  }, [isMobile])
 
   return (
     <div
       aria-hidden
       className="absolute inset-0 z-0 grid grid-cols-2 grid-rows-2 pointer-events-none opacity-25"
     >
-      {QUADRANTS.map((q, i) => (
+      {QUADRANTS.map((q) => (
+        // `relative overflow-hidden` clips any canvas bleed.
+        // The inner wrapper is a flex box so the FIT-scaled canvas is
+        // always visually centered in its quadrant even if Phaser's
+        // autoCenter margins aren't pixel-perfect for portrait scenes.
         <div key={q.key} className="relative overflow-hidden">
           <div
-            ref={(el) => { containerRefs.current[i] = el }}
-            className="w-full h-full"
+            ref={(el) => {
+              const idx = QUADRANTS.findIndex((x) => x.key === q.key)
+              containerRefs.current[idx] = el
+            }}
+            className="absolute inset-0 flex items-center justify-center [&>canvas]:max-w-full [&>canvas]:max-h-full [&>canvas]:w-auto [&>canvas]:h-auto"
           />
         </div>
       ))}
